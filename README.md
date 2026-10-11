@@ -156,7 +156,7 @@ UI 线程每 16 ms 合并标签、淡出与手部状态；原始输入线程每 
 
 ## 构建和验证
 
-Codex 桥接验收需先退出桌宠再运行 `scripts/verify-package.ps1 -Directory <交付目录>`：脚本占用桌宠单实例锁，并用自己的接收端核对三类消息，避免夹具被用户桌宠当作 hooks 状态。它检查必需文件与哈希、marketplace 路由、manifest 引用、事件集合、exe 一致性及实际投递，不能仅以 `{}` 和退出码 0 判定接入成功。`tests/verify_package.ps1 -Directory <交付目录>` 还验证中文空格路径、缺失 exe、exe 不一致、错误市场路径和空操作脚本；临时夹具仅写入 `.runtime/`。这两项均不是 Codex 真实会话或桌宠 UI 验收。
+Codex 桥接验收需先退出桌宠再运行 `scripts/verify-package.ps1 -Directory <交付目录>`：脚本占用桌宠单实例锁，并用自己的接收端核对八类消息，避免夹具被用户桌宠当作 hooks 状态。它检查必需文件与哈希、marketplace 路由、manifest 引用、事件集合、exe 一致性及实际投递，不能仅以 `{}` 和退出码 0 判定接入成功。`tests/verify_package.ps1 -Directory <交付目录>` 还验证中文空格路径、缺失 exe、exe 不一致、错误市场路径和空操作脚本；临时夹具仅写入 `.runtime/`。这两项均不是 Codex 真实会话或桌宠 UI 验收。
 
 2026-10-11 鼠标跟随功能验证会重新生成前次清理后的测试、编译缓存及预览程序；旧交付包保持原样，本轮程序以 `target/release/PetDesktop.exe` 为准。
 
