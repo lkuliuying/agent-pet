@@ -10,7 +10,7 @@ if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw '缺少 Releas
 $binaryTime = (Get-Item -LiteralPath $binary).LastWriteTimeUtc
 $inputs = @('src', 'ui', 'assets') | ForEach-Object { Get-ChildItem -LiteralPath (Join-Path $workspace $_) -File -Recurse }
 $inputs += @('Cargo.toml','Cargo.lock','build.rs','.cargo\config.toml') | ForEach-Object { Get-Item -LiteralPath (Join-Path $workspace $_) }
-if ($inputs | Where-Object { $_.Extension -in '.rs','.slint','.png','.svg','.json','.toml','.lock' -and $_.LastWriteTimeUtc -gt $binaryTime }) {
+if ($inputs | Where-Object { $_.Extension -in '.rs','.slint','.png','.svg','.wav','.json','.toml','.lock' -and $_.LastWriteTimeUtc -gt $binaryTime }) {
     throw '源码或资源比 exe 新，请先重新构建。'
 }
 $name = 'FireflyPet-v0.1.0-windows-x64-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
@@ -27,6 +27,11 @@ $assetNotes = Join-Path $stage '角色资源'
 New-Item -ItemType Directory -Path $assetNotes | Out-Null
 Copy-Item -LiteralPath (Join-Path $workspace 'assets\firefly\README.md') -Destination $assetNotes
 Copy-Item -LiteralPath (Join-Path $workspace 'assets\firefly\character.json') -Destination $assetNotes
+$voiceNotes = Join-Path $stage '语音资源'
+New-Item -ItemType Directory -Path $voiceNotes | Out-Null
+foreach ($voiceFile in @('README.md', 'lines.json', 'generation.json', 'sources.json')) {
+    Copy-Item -LiteralPath (Join-Path $workspace ('assets\voice\' + $voiceFile)) -Destination $voiceNotes
+}
 
 Push-Location -LiteralPath $workspace
 try {
