@@ -1,0 +1,20 @@
+[
+  {"id":"cpu","text":"电脑有点忙，处理器已经持续高负载了。"},
+  {"id":"memory","text":"内存快装满啦，可以关掉暂时不用的程序。"},
+  {"id":"gpu","text":"显卡已经持续高负载了，可以让它休息一下。"},
+  {"id":"codex-question","text":"Codex 正在等待你的回答。"},
+  {"id":"power-on","text":"电源已接好，安心工作吧。"},
+  {"id":"power-off","text":"现在使用电池供电啦。"},
+  {"id":"battery10","text":"电量只剩 10% 或更少，记得接上电源。"},
+  {"id":"battery20","text":"电量只剩 20% 或更少，准备充电吧。"},
+  {"id":"network-on","text":"互联网连接恢复啦。","parameters":{"seed":20260404}},
+  {"id":"network-off","text":"暂时未连接到互联网，检查一下网络吧。"},
+  {"id":"codex-stop","text":"Codex 这一轮回复结束了。"},
+  {"id":"codex-permission","text":"Codex 发起了权限请求。"},
+  {"id":"codex-interrupt","text":"这一轮已中断。"},
+  {"id":"demo-codex-stop","text":"这是一条演示提醒。Codex 这一轮回复结束了。","parameters":{"seed":20260404}},
+  {"id":"demo-codex-permission","text":"这是一条演示提醒。Codex 发起了权限请求。"},
+  {"id":"demo-codex-interrupt","text":"这是一条演示提醒。这一轮已中断。"},
+  {"id":"preview","text":"你好，我是流萤。今天也一起加油吧。"},
+  {"id":"error","text":"桌宠遇到了一点问题，请查看提示"}
+]
