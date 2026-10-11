@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "firefly",
+  "name": "流萤",
+  "atlas": "atlas.png",
+  "atlas_size": [1254,1254],
+  "body": {"sx":0,"sy":24,"sw":635,"sh":733,"x":20,"y":66,"width":196.85,"height":227.23},
+  "left_hand": {"sx":642,"sy":186,"sw":316,"sh":264,"x":96,"y":202,"width":91.64,"height":76.56},
+  "right_hand": {"sx":936,"sy":189,"sw":280,"sh":228,"x":156,"y":198,"width":78.4,"height":63.84},
+  "keyboard": {"sx":640,"sy":445,"sw":604,"sh":298,"x":99,"y":225,"width":187.24,"height":92.38},
+  "faces": [
+    {"sx":72,"sy":778,"sw":300,"sh":230,"x":90.06,"y":134.2,"width":93,"height":71.3},
+    {"sx":490,"sy":778,"sw":300,"sh":230,"x":90.06,"y":134.2,"width":93,"height":71.3},
+    {"sx":904,"sy":778,"sw":300,"sh":230,"x":90.06,"y":134.2,"width":93,"height":71.3},
+    {"sx":72,"sy":1018,"sw":300,"sh":230,"x":90.06,"y":134.2,"width":93,"height":71.3},
+    {"sx":490,"sy":1018,"sw":300,"sh":230,"x":90.06,"y":134.2,"width":93,"height":71.3},
+    {"sx":904,"sy":1018,"sw":300,"sh":230,"x":90.06,"y":134.2,"width":93,"height":71.3}
+  ],
+  "expressions": ["idle","blink","focused","happy","sleepy","surprised"],
+  "anchors": {"label_y":216,"left_tap_dy":3,"right_tap_dy":2},
+  "source": "依据已确认预览，使用内置 imagegen 制作的流萤 2D 轻侧视白色制服分层同人素材，非官方游戏导出素材。"
+}

@@ -1,0 +1,68 @@
+import { ScrollView } from "std-widgets.slint";
+import { PetTheme, ActionButton, Divider } from "controls.slint";
+
+export struct QuotaRow { title: string, remaining: string, reset: string }
+
+export component StatusPanelWindow inherits Window {
+    title: "流萤桌宠 · 当前状态";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 320px;
+    height: min(420px, 240px + root.rows.length * 88px);
+    default-font-family: "Microsoft YaHei UI";
+    in property <string> cpu-text: "未知";
+    in property <string> memory-text: "未知";
+    in property <[QuotaRow]> rows;
+    in property <string> status: "点击角色读取账号额度。";
+    in property <string> updated;
+    in property <bool> busy;
+    callback dismiss();
+    callback refresh();
+
+    Rectangle {
+        background: #f7faf8;
+        border-color: #cdded5; border-width: 1px; border-radius: 10px;
+        VerticalLayout {
+            padding: 16px; spacing: 10px;
+            HorizontalLayout {
+                Text { text: "当前状态"; color: PetTheme.ink; font-size: 17px; font-weight: 600; vertical-alignment: center; }
+                ActionButton { text: "收起"; clicked => { root.dismiss(); } }
+            }
+            Rectangle {
+                min-height: 48px; max-height: 48px;
+                background: #eaf3ee; border-radius: 7px;
+                HorizontalLayout {
+                    padding: 10px; spacing: 10px;
+                    Text { text: "整机 CPU  " + root.cpu-text; color: PetTheme.ink; font-size: 13px; vertical-alignment: center; }
+                    Text { text: "内存  " + root.memory-text; color: PetTheme.ink; font-size: 13px; vertical-alignment: center; horizontal-alignment: right; }
+                }
+            }
+            Divider {}
+            HorizontalLayout {
+                Text { text: "Codex 账号额度"; color: PetTheme.ink; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+                ActionButton { text: root.busy ? "查询中" : "刷新"; enabled: !root.busy; clicked => { root.refresh(); } }
+            }
+            ScrollView {
+                horizontal-stretch: 1; vertical-stretch: 1;
+                content-width: self.width;
+                VerticalLayout {
+                    padding-right: 10px; spacing: 8px;
+                    Text { text: root.status; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                    for row in root.rows: Rectangle {
+                        min-height: 80px; max-height: 80px;
+                        background: white; border-radius: 6px;
+                        VerticalLayout {
+                            padding: 8px; spacing: 3px;
+                            Text { text: row.title; color: PetTheme.ink; font-size: 12px; overflow: elide; }
+                            Text { text: "剩余 " + row.remaining; color: PetTheme.green; font-size: 18px; font-weight: 600; }
+                            Text { text: row.reset; color: PetTheme.muted; font-size: 11px; overflow: elide; }
+                        }
+                    }
+                    if root.updated != "": Text { text: root.updated; color: PetTheme.muted; font-size: 11px; wrap: word-wrap; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+        }
+    }
+}

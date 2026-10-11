@@ -1,0 +1,40 @@
+import { MenuRow, Divider } from "controls.slint";
+
+export enum MenuAction { pause, quiet, passthrough, reset-position, settings, quit }
+
+export component QuickMenuWindow inherits Window {
+    title: "流萤桌宠 · 快捷操作";
+    no-frame: true;
+    always-on-top: true;
+    background: transparent;
+    width: 248px; height: 300px;
+    default-font-family: "Microsoft YaHei UI";
+    in property <bool> paused;
+    in property <bool> quiet;
+    in property <bool> passthrough;
+    callback action(MenuAction);
+    callback dismiss();
+    forward-focus: keys;
+    public function focus-menu() { keys.focus(); }
+    Rectangle {
+        background: #f7faf8;
+        border-color: #cdded5; border-width: 1px; border-radius: 9px;
+        keys := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.dismiss(); return accept; }
+                return reject;
+            }
+        }
+        VerticalLayout {
+            padding: 7px; spacing: 2px;
+            MenuRow { text: root.paused ? "恢复键盘同步" : "暂停键盘同步"; glyph: root.paused ? "\u{e768}" : "\u{e769}"; activated => { root.action(MenuAction.pause); } }
+            MenuRow { text: root.quiet ? "关闭勿扰" : "开启勿扰"; glyph: "\u{e708}"; activated => { root.action(MenuAction.quiet); } }
+            MenuRow { text: root.passthrough ? "关闭鼠标穿透" : "开启鼠标穿透"; glyph: "\u{e962}"; description: "可从托盘恢复"; activated => { root.action(MenuAction.passthrough); } }
+            MenuRow { text: "重置到右下角"; glyph: "\u{e777}"; activated => { root.action(MenuAction.reset-position); } }
+            Divider {}
+            MenuRow { text: "完整设置…"; glyph: "\u{e713}"; activated => { root.action(MenuAction.settings); } }
+            Divider {}
+            MenuRow { text: "退出桌宠"; glyph: "\u{e7e8}"; activated => { root.action(MenuAction.quit); } }
+        }
+    }
+}

@@ -1,0 +1,151 @@
+export global PetTheme {
+    out property <color> ink: #203e36;
+    out property <color> muted: #6b7e75;
+    out property <color> green: #3f8272;
+    out property <color> line: #dfe8e2;
+    out property <color> selected: #e0efe8;
+}
+
+export component Icon inherits Text {
+    font-family: "Segoe MDL2 Assets";
+    font-size: 18px;
+    color: PetTheme.ink;
+    horizontal-alignment: center;
+    vertical-alignment: center;
+    width: 24px;
+}
+
+export component ActionButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> enabled: true;
+    callback clicked();
+    min-width: label.preferred-width + 32px;
+    max-width: label.preferred-width + 32px;
+    preferred-width: label.preferred-width + 32px;
+    horizontal-stretch: 0;
+    preferred-height: 36px;
+    min-height: 36px;
+    max-height: 36px;
+    vertical-stretch: 0;
+    border-radius: 6px;
+    border-width: focus.has-focus ? 2px : 1px;
+    border-color: PetTheme.green;
+    background: root.primary ? (touch.has-hover ? #316e5f : PetTheme.green) : (touch.has-hover ? #eaf3ee : white);
+    opacity: root.enabled ? 1 : 0.45;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    forward-focus: focus;
+    label := Text {
+        text: root.text;
+        color: root.primary ? white : PetTheme.green;
+        font-size: 14px;
+        font-weight: 600;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return { root.clicked(); return accept; }
+            return reject;
+        }
+    }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { focus.focus(); root.clicked(); }
+    }
+}
+
+export component Toggle inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> label;
+    callback toggled();
+    width: 44px;
+    height: 24px;
+    border-radius: 12px;
+    background: root.checked ? PetTheme.green : #bfc5c1;
+    border-width: focus.has-focus ? 2px : 0px;
+    border-color: PetTheme.ink;
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked <=> root.checked;
+    accessible-action-default => { root.checked = !root.checked; root.toggled(); }
+    forward-focus: focus;
+    Rectangle {
+        x: root.checked ? parent.width - 21px : 3px;
+        y: 3px; width: 18px; height: 18px;
+        border-radius: 9px; background: white;
+        animate x { duration: 110ms; }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " { root.checked = !root.checked; root.toggled(); return accept; }
+            return reject;
+        }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => { focus.focus(); root.checked = !root.checked; root.toggled(); }
+    }
+}
+
+export component SettingToggle inherits Rectangle {
+    in property <string> text;
+    in property <string> description;
+    in-out property <bool> checked;
+    preferred-height: root.description == "" ? 43px : 66px;
+    vertical-stretch: 0;
+    HorizontalLayout {
+        spacing: 20px;
+        VerticalLayout {
+            alignment: center; spacing: 5px;
+            Text { text: root.text; color: PetTheme.ink; font-size: 14px; }
+            if root.description != "": Text { text: root.description; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+        }
+        VerticalLayout {
+            alignment: center;
+            Toggle { checked <=> root.checked; label: root.text; }
+        }
+    }
+}
+
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: PetTheme.line;
+}
+
+export component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <string> description;
+    in property <bool> active;
+    callback activated();
+    height: root.description == "" ? 42px : 54px;
+    border-radius: 6px;
+    background: root.active || touch.has-hover || focus.has-focus ? PetTheme.selected : transparent;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { root.activated(); }
+    forward-focus: focus;
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 10px; spacing: 12px;
+        Icon { text: root.glyph; color: root.active ? PetTheme.green : PetTheme.ink; }
+        VerticalLayout {
+            alignment: center; spacing: 4px;
+            Text { text: root.text; color: root.active ? PetTheme.green : PetTheme.ink; font-size: 14px; font-weight: root.active ? 600 : 400; }
+            if root.description != "": Text { text: root.description; color: PetTheme.muted; font-size: 11px; }
+        }
+    }
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == " " || event.text == Key.Return { root.activated(); return accept; }
+            return reject;
+        }
+    }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.activated(); } }
+}

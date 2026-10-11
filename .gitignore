@@ -1,0 +1,7 @@
+/target/
+/codex-marketplace/**/*.exe
+/artifacts/
+/.runtime/
+
+# 旧桌面截图包含后方窗口内容，仅在本地保留。
+/docs/native-preview.jpg

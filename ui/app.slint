@@ -1,0 +1,128 @@
+export { SettingsWindow, SettingsValues } from "settings.slint";
+export { QuickMenuWindow, MenuAction } from "quick-menu.slint";
+export { StatusPanelWindow, QuotaRow } from "status-panel.slint";
+
+export struct SpriteSpec { sx: int, sy: int, sw: int, sh: int, px: float, py: float, w: float, h: float }
+
+component Sprite inherits Image {
+    in property <SpriteSpec> spec;
+    in property <float> factor: 1;
+    x: spec.px * factor * 1px;
+    y: spec.py * factor * 1px;
+    width: spec.w * factor * 1px;
+    height: spec.h * factor * 1px;
+    source: @image-url("../assets/firefly/atlas.png");
+    source-clip-x: spec.sx;
+    source-clip-y: spec.sy;
+    source-clip-width: spec.sw;
+    source-clip-height: spec.sh;
+    image-fit: fill;
+}
+
+export component PetWindow inherits Window {
+    title: "流萤 · 键盘桌宠";
+    icon: @image-url("../assets/icon.svg");
+    in property <color> preview-background: transparent;
+    background: root.preview-background;
+    no-frame: true;
+    always-on-top: true;
+    preferred-width: 300px * root.factor;
+    preferred-height: (320px + root.headroom * 1px) * root.factor;
+    in property <float> factor: 0.9;
+    in property <float> headroom: 30;
+    in property <string> key-label;
+    in property <float> key-opacity;
+    in property <bool> left-tap;
+    in property <bool> right-tap;
+    in property <float> label-y:235;
+    in property <float> left-tap-dy:3;
+    in property <float> right-tap-dy:3;
+    in property <float> breath;
+    in property <SpriteSpec> body;
+    in property <SpriteSpec> face;
+    in property <SpriteSpec> left-hand;
+    in property <SpriteSpec> right-hand;
+    in property <SpriteSpec> keyboard;
+    in property <string> bubble;
+    in property <bool> simulation;
+    callback pat();
+    callback drag-request(float,float);
+    callback context-request(float,float);
+    callback dismiss-menu();
+    property <float> start-x;
+    property <float> start-y;
+    property <bool> dragging;
+
+    if root.bubble != "": Rectangle {
+        x: 10px * root.factor; y: 2px * root.factor;
+        width: 280px * root.factor; height: 57px * root.factor;
+        border-radius: 12px * root.factor;
+        background: #f4fff8; border-width: 1px; border-color: #a9d3c7;
+        VerticalLayout {
+            padding: 7px * root.factor; spacing: 2px * root.factor;
+            Text { text: root.simulation ? "联动演示" : "流萤的小提醒"; color: #39816f; font-size: 9px * root.factor; font-weight: 600; }
+            Text { text: root.bubble; color: #264b43; wrap: word-wrap; overflow: elide; font-size: 12px * root.factor; vertical-alignment: center; }
+        }
+    }
+    Sprite {spec: root.body; factor: root.factor; y: (root.body.py + root.headroom + root.breath) * root.factor * 1px;}
+    Sprite {spec: root.face; factor: root.factor; y: (root.face.py + root.headroom + root.breath) * root.factor * 1px;}
+    Sprite {spec:root.keyboard;factor:root.factor;y:(root.keyboard.py + root.headroom)*root.factor*1px;}
+    Sprite {spec:root.left-hand;factor:root.factor;y:(root.left-hand.py + root.headroom + root.breath + (root.left-tap ? root.left-tap-dy : 0))*root.factor*1px;animate y {duration:55ms;}}
+    Sprite {spec:root.right-hand;factor:root.factor;y:(root.right-hand.py + root.headroom + root.breath + (root.right-tap ? root.right-tap-dy : 0))*root.factor*1px;animate y {duration:55ms;}}
+    if root.key-label != "": Rectangle {
+        x: parent.width - 12px * root.factor - self.width;
+        y: (root.label-y + root.headroom) * root.factor * 1px;
+        width: min(276px * root.factor, max(48px * root.factor, key-text.preferred-width + 20px * root.factor));
+        height: 24px * root.factor;
+        opacity: root.key-opacity;
+        border-radius: 12px * root.factor;
+        background: #f5fcfaf5; border-width: 1px; border-color: #9ebdb8;
+        key-text := Text {
+            x: 8px * root.factor; width: parent.width - 16px * root.factor;
+            text: root.key-label; color: #526871; font-size: 12px * root.factor; font-weight: 600;
+            horizontal-alignment: center; vertical-alignment: center; overflow: elide;
+        }
+    }
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.dismiss-menu();
+                root.start-x = self.mouse-x / 1px; root.start-y = self.mouse-y / 1px; root.dragging = false;
+            }
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {root.context-request(self.mouse-x / 1px,self.mouse-y / 1px);}
+        }
+        moved => {
+            if self.pressed && (root.dragging || (abs(self.mouse-x / 1px - root.start-x) + abs(self.mouse-y / 1px - root.start-y)) > 5) {
+                root.dragging=true;
+                root.drag-request(self.mouse-x / 1px - root.start-x,self.mouse-y / 1px - root.start-y);
+            }
+        }
+        clicked => {if !root.dragging {root.pat();}}
+    }
+}
+
+export component PetTray inherits SystemTrayIcon {
+    icon: @image-url("../assets/icon.svg");
+    tooltip: "流萤桌宠 · 右键打开菜单";
+    visible: true;
+    callback restore-pet();
+    callback settings-request();
+    callback toggle-pause();
+    callback toggle-quiet();
+    callback toggle-passthrough();
+    callback reset-position();
+    callback quit-request();
+    in property <bool> paused;
+    in property <bool> quiet;
+    in property <bool> passthrough;
+    clicked => {root.restore-pet();}
+    Menu {
+        MenuItem {title:"显示桌宠 / 关闭穿透";activated=>{root.restore-pet();}}
+        MenuItem {title:root.paused?"恢复键盘同步":"暂停键盘同步";activated=>{root.toggle-pause();}}
+        MenuItem {title:root.quiet?"关闭勿扰":"开启勿扰";activated=>{root.toggle-quiet();}}
+        MenuItem {title:root.passthrough?"关闭鼠标穿透":"开启鼠标穿透";activated=>{root.toggle-passthrough();}}
+        MenuItem {title:"重置到右下角";activated=>{root.reset-position();}}
+        MenuItem {title:"完整设置…";activated=>{root.settings-request();}}
+        MenuItem {title:"退出流萤桌宠";activated=>{root.quit-request();}}
+    }
+}

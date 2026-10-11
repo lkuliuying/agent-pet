@@ -1,0 +1,216 @@
+import { ComboBox, Slider, ScrollView, AboutSlint } from "std-widgets.slint";
+import { PetTheme, Icon, ActionButton, SettingToggle, Divider, MenuRow } from "controls.slint";
+
+export struct SettingsValues {
+    scale-percent: float, paused: bool, passthrough: bool, quiet: bool, quiet-fullscreen: bool,
+    voice: bool, volume: int, voice-index: int, battery: bool, power: bool,
+    network: bool, cpu: bool, memory: bool, codex: bool,
+}
+
+export component SettingsWindow inherits Window {
+    title: "流萤桌宠 · 设置";
+    icon: @image-url("../assets/icon.svg");
+    preferred-width: 860px; preferred-height: 600px;
+    min-width: 680px; min-height: 440px;
+    background: white; default-font-size: 14px;
+    default-font-family: "Microsoft YaHei UI";
+    in-out property <SettingsValues> draft;
+    in property <SettingsValues> applied;
+    out property <bool> dirty: root.draft != root.applied;
+    out property <bool> save-visible: root.page != 4 || root.dirty;
+    in-out property <int> page;
+    in property <[string]> voices;
+    in property <string> status;
+    in property <bool> status-error;
+    in property <string> battery-status: "电量：正在读取…";
+    in property <string> codex-status: "尚未收到 hooks 状态事件。";
+    in property <string> quota-status: "点击角色或“刷新额度”读取账号额度。";
+    in property <bool> quota-busy;
+    in property <string> voice-status: "正在读取系统音色…";
+    callback apply();
+    callback preview-voice();
+    callback test-codex();
+    callback refresh-quota();
+    callback reset-position();
+
+    HorizontalLayout {
+        spacing: 0;
+        Rectangle {
+            width: 180px; background: #f0f5f1;
+            Rectangle { x: parent.width - 1px; width: 1px; background: PetTheme.line; }
+            VerticalLayout {
+                padding-top: 28px; padding-bottom: 22px; spacing: 5px;
+                VerticalLayout {
+                    height: 72px;
+                    padding-left: 18px; padding-right: 10px; spacing: 7px;
+                    Text { text: "FIREFLY / 流萤"; font-size: 17px; font-weight: 700; color: PetTheme.green; }
+                    Text { text: "小小的陪伴，刚刚好。"; font-size: 11px; color: PetTheme.muted; }
+                    Rectangle { height: 22px; }
+                }
+                for item[index] in [
+                    {title: "桌面与键盘", glyph: "\u{e765}"},
+                    {title: "消息提醒", glyph: "\u{ea8f}"},
+                    {title: "语音播报", glyph: "\u{e767}"},
+                    {title: "Codex 联动", glyph: "\u{e71b}"},
+                    {title: "关于", glyph: "\u{e946}"},
+                ]: Rectangle {
+                    height: 48px;
+                    MenuRow {
+                        x: 5px; y: 2px; width: parent.width - 10px;
+                        text: item.title; glyph: item.glyph; active: root.page == index;
+                        activated => { root.page = index; }
+                    }
+                    if root.page == index: Rectangle { x: 0px; y: 2px; width: 3px; height: 42px; background: PetTheme.green; }
+                }
+                Rectangle { vertical-stretch: 1; }
+                Text { x: 18px; text: "v0.1.0"; color: PetTheme.muted; font-size: 12px; }
+            }
+        }
+        VerticalLayout {
+            spacing: 0;
+            ScrollView {
+                content-width: self.width;
+                VerticalLayout {
+                    padding: 30px; spacing: 9px;
+                    Text {
+                        text: ["桌面与键盘", "消息提醒", "语音播报", "Codex 联动", "关于"][root.page];
+                        font-size: 26px; font-weight: 700; color: PetTheme.ink;
+                    }
+                    if root.page != 4: Text {
+                        text: ["调整角色大小、输入同步与桌面交互。", "决定何时提醒，以及接收哪些系统消息。", "使用 Windows 已安装的系统音色。", "按需查看账号额度，接收任务状态提醒。"][root.page];
+                        color: PetTheme.muted; font-size: 13px; wrap: word-wrap;
+                    }
+                    Rectangle { height: 14px; }
+
+                    if root.page == 0: VerticalLayout {
+                        spacing: 12px;
+                        HorizontalLayout {
+                            spacing: 24px;
+                            VerticalLayout {
+                                alignment: center; spacing: 6px;
+                                Text { text: "桌宠大小"; color: PetTheme.ink; font-weight: 600; }
+                                Text { text: "按你的屏幕调整大小"; color: PetTheme.muted; font-size: 12px; }
+                            }
+                            VerticalLayout {
+                                alignment: center; spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    Slider { minimum: 60; maximum: 160; value: root.draft.scale-percent; changed(value) => { root.draft.scale-percent = round(value); } }
+                                    Text { width: 45px; text: round(root.draft.scale-percent) + "%"; color: PetTheme.ink; vertical-alignment: center; }
+                                }
+                                HorizontalLayout {
+                                    Text { text: "60%"; color: PetTheme.muted; font-size: 11px; }
+                                    Text { text: "160%"; color: PetTheme.muted; font-size: 11px; horizontal-alignment: right; }
+                                }
+                            }
+                        }
+                        Divider {}
+                        SettingToggle { text: "暂停键盘同步"; description: "暂停后，角色不再跟随按键敲击。"; checked <=> root.draft.paused; }
+                        Divider {}
+                        SettingToggle { text: "鼠标穿透"; description: "开启后，可从系统托盘恢复交互。"; checked <=> root.draft.passthrough; }
+                        Divider {}
+                        HorizontalLayout {
+                            spacing: 20px;
+                            VerticalLayout {
+                                alignment: center; spacing: 6px;
+                                Text { text: "桌宠位置"; color: PetTheme.ink; font-weight: 600; }
+                                Text { text: "将角色放回所在屏幕右下角。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                            }
+                            ActionButton { text: "重置到右下角"; clicked => { root.reset-position(); } }
+                        }
+                        Divider {}
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Icon { text: "\u{e946}"; color: PetTheme.green; }
+                            Text { text: "最近按键显示在小键盘上方，松开后短暂停留。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        }
+                    }
+
+                    if root.page == 1: VerticalLayout {
+                        spacing: 2px;
+                        SettingToggle { text: "勿扰模式"; description: "暂停所有主动播报"; checked <=> root.draft.quiet; }
+                        SettingToggle { text: "全屏或演示时自动勿扰"; checked <=> root.draft.quiet-fullscreen; }
+                        Divider {}
+                        Text { text: "系统提醒"; color: PetTheme.muted; font-size: 12px; height: 30px; vertical-alignment: center; }
+                        SettingToggle { text: "低电量"; checked <=> root.draft.battery; }
+                        SettingToggle { text: "电源变化"; checked <=> root.draft.power; }
+                        SettingToggle { text: "网络变化"; checked <=> root.draft.network; }
+                        SettingToggle { text: "CPU 持续高占用"; checked <=> root.draft.cpu; }
+                        SettingToggle { text: "内存持续高占用"; checked <=> root.draft.memory; }
+                        Text { text: "CPU / 内存超过 90% 持续 30 秒时提醒。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        Text { text: root.battery-status; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                    }
+
+                    if root.page == 2: VerticalLayout {
+                        spacing: 20px;
+                        SettingToggle { text: "启用系统语音"; checked <=> root.draft.voice; }
+                        Divider {}
+                        HorizontalLayout {
+                            spacing: 30px;
+                            Text { text: "系统音色"; color: PetTheme.ink; vertical-alignment: center; }
+                            ComboBox { model: root.voices; current-index <=> root.draft.voice-index; enabled: root.voices.length > 0; }
+                        }
+                        HorizontalLayout {
+                            spacing: 20px;
+                            Text { text: "音量"; color: PetTheme.ink; vertical-alignment: center; }
+                            Slider { minimum: 0; maximum: 100; value: root.draft.volume; changed(value) => { root.draft.volume = round(value); } }
+                            Text { text: root.draft.volume + "%"; color: PetTheme.muted; vertical-alignment: center; }
+                        }
+                        HorizontalLayout {
+                            spacing: 16px;
+                            ActionButton { text: "试听"; enabled: root.voices.length > 0; clicked => { root.preview-voice(); } }
+                            Text { text: root.voice-status; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
+                        }
+                        Text { text: "语音关闭时，文字提醒仍然显示。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                    }
+
+                    if root.page == 3: VerticalLayout {
+                        spacing: 18px;
+                        Text { text: "账号额度"; color: PetTheme.ink; font-size: 16px; font-weight: 600; }
+                        Text { text: root.quota-status; color: PetTheme.ink; font-size: 13px; wrap: word-wrap; }
+                        Text { text: "左键点击角色查看整机 CPU、内存、剩余额度及重置时间。额度查询独立于下面的事件提醒开关。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        HorizontalLayout { ActionButton { text: root.quota-busy ? "正在查询…" : "刷新额度"; enabled: !root.quota-busy; clicked => { root.refresh-quota(); } } Rectangle { horizontal-stretch: 1; } }
+                        Divider {}
+                        SettingToggle { text: "接收 Codex 事件"; description: "轮次结束、审批请求和中断"; checked <=> root.draft.codex; }
+                        Divider {}
+                        Text { text: root.codex-status; color: PetTheme.ink; font-size: 14px; wrap: word-wrap; }
+                        Text { text: "按使用说明安装本地插件，并信任 hooks。"; color: PetTheme.muted; font-size: 13px; wrap: word-wrap; }
+                        HorizontalLayout { ActionButton { text: "演示一条提醒"; clicked => { root.test-codex(); } } Rectangle { horizontal-stretch: 1; } }
+                        Text { text: "仅用于演示，不代表接入成功。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "只接收状态标识，不保存提示词或回复。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                    }
+
+                    if root.page == 4: VerticalLayout {
+                        spacing: 20px;
+                        Text { text: "流萤桌宠    v0.1.0"; color: PetTheme.ink; font-size: 20px; font-weight: 600; }
+                        Text { text: "Windows 原生免安装桌面伙伴"; color: PetTheme.muted; font-size: 13px; }
+                        Divider {}
+                        Text { text: "本地运行，不记录或上传按键历史。"; color: PetTheme.ink; wrap: word-wrap; }
+                        Text { text: "流萤同人素材，非官方游戏资源。"; color: PetTheme.ink; wrap: word-wrap; }
+                        HorizontalLayout {
+                            AboutSlint { preferred-width: 240px; preferred-height: 170px; horizontal-stretch: 0; }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+                    Rectangle { min-height: 12px; vertical-stretch: 1; }
+                }
+            }
+            Rectangle {
+                min-height: footer.min-height;
+                preferred-height: 68px;
+                vertical-stretch: 0;
+                background: #f7faf8;
+                Rectangle { x: 0px; y: 0px; width: parent.width; height: 1px; background: PetTheme.line; }
+                footer := HorizontalLayout {
+                    padding-left: 30px; padding-right: 30px; padding-top: 14px; padding-bottom: 14px; spacing: 20px;
+                    Text {
+                        text: root.status-error ? root.status : (root.dirty ? "有未保存的修改" : (root.page == 4 ? "当前页面没有可修改的设置" : (root.status != "" ? root.status : "更改后需要保存并应用")));
+                        color: root.status-error ? #a63333 : PetTheme.muted;
+                        font-size: 12px; wrap: word-wrap; vertical-alignment: center;
+                    }
+                    if root.save-visible: ActionButton { text: "保存并应用"; primary: true; clicked => { root.apply(); } }
+                }
+            }
+        }
+    }
+}
