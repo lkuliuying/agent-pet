@@ -2,6 +2,7 @@ use serde::Deserialize;
 
 pub const BREATH_AMPLITUDE: f32 = 1.3;
 const ATLAS: &[u8] = include_bytes!("../assets/firefly/atlas.png");
+const GAZE_ATLAS: &[u8] = include_bytes!("../assets/firefly/gaze.png");
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct Sprite {
@@ -25,6 +26,26 @@ pub struct Character {
     pub faces: Vec<Sprite>,
     pub expressions: Vec<String>,
     pub anchors: Anchors,
+    pub gaze: GazeAssets,
+}
+#[derive(Clone, Deserialize)]
+pub struct GazeAssets {
+    pub atlas_size: [i32; 2],
+    pub iris_crops: [[i32; 4]; 2],
+    pub sclera_crops: [[i32; 4]; 2],
+    pub eye_center: [f32; 2],
+    pub expressions: Vec<GazeExpression>,
+}
+#[derive(Clone, Deserialize)]
+pub struct GazeExpression {
+    pub face: usize,
+    pub max_offset: [f32; 2],
+    pub eyes: [Eye; 2],
+}
+#[derive(Clone, Deserialize)]
+pub struct Eye {
+    pub iris_rect: [f32; 4],
+    pub mask: Vec<[f32; 2]>,
 }
 #[derive(Deserialize)]
 pub struct Anchors {
@@ -36,7 +57,86 @@ pub fn firefly() -> Result<Character, String> {
     let c: Character = serde_json::from_str(include_str!("../assets/firefly/character.json"))
         .map_err(|e| e.to_string())?;
     validate(&c, ATLAS)?;
+    validate_gaze(&c, GAZE_ATLAS)?;
     Ok(c)
+}
+
+fn validate_gaze(c: &Character, atlas: &[u8]) -> Result<(), String> {
+    let g = &c.gaze;
+    let invalid = || "眼部图集、遮罩或移动范围无效".to_string();
+    if atlas.len() < 33
+        || &atlas[..8] != b"\x89PNG\r\n\x1a\n"
+        || atlas[8..12] != 13_u32.to_be_bytes()
+        || &atlas[12..16] != b"IHDR"
+        || atlas[24] != 8
+        || atlas[25] != 6
+    {
+        return Err(invalid());
+    }
+    for (offset, size) in [(16, g.atlas_size[0]), (20, g.atlas_size[1])] {
+        if size <= 0
+            || size > 4096
+            || u32::from_be_bytes(atlas[offset..offset + 4].try_into().unwrap()) != size as u32
+        {
+            return Err(invalid());
+        }
+    }
+    for [x, y, w, h] in g.iris_crops.iter().chain(&g.sclera_crops).copied() {
+        if x < 0
+            || y < 0
+            || w <= 0
+            || h <= 0
+            || x.checked_add(w).is_none_or(|v| v > g.atlas_size[0])
+            || y.checked_add(h).is_none_or(|v| v > g.atlas_size[1])
+        {
+            return Err(invalid());
+        }
+    }
+    if !g.eye_center[0].is_finite()
+        || !g.eye_center[1].is_finite()
+        || !(0.0..=300.).contains(&g.eye_center[0])
+        || !(0.0..=320.).contains(&g.eye_center[1])
+        || g.expressions.iter().map(|e| e.face).collect::<Vec<_>>() != [0, 2, 4, 5]
+    {
+        return Err(invalid());
+    }
+    for e in &g.expressions {
+        let face = c.faces.get(e.face).ok_or_else(invalid)?;
+        if e.max_offset != [3., if e.face == 4 { 1. } else { 2. }] {
+            return Err(invalid());
+        }
+        for eye in &e.eyes {
+            let [x, y, w, h] = eye.iris_rect;
+            if !eye.iris_rect.into_iter().all(f32::is_finite)
+                || w <= 0.
+                || h <= 0.
+                || x < 0.
+                || y < 0.
+                || x + w > face.sw as f32
+                || y + h > face.sh as f32
+                || !(3..=64).contains(&eye.mask.len())
+            {
+                return Err(invalid());
+            }
+            let mut area = 0.;
+            for (index, p) in eye.mask.iter().enumerate() {
+                if !p.iter().all(|v| v.is_finite())
+                    || p[0] < 0.
+                    || p[1] < 0.
+                    || p[0] > face.sw as f32
+                    || p[1] > face.sh as f32
+                {
+                    return Err(invalid());
+                }
+                let next = eye.mask[(index + 1) % eye.mask.len()];
+                area += p[0] * next[1] - next[0] * p[1];
+            }
+            if area.abs() < 1. {
+                return Err(invalid());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate(c: &Character, atlas: &[u8]) -> Result<(), String> {
@@ -185,5 +285,40 @@ mod tests {
             assert!(face.y + face.height + BREATH_AMPLITUDE < c.anchors.label_y);
         }
         assert!(c.body.y - BREATH_AMPLITUDE >= 60.);
+    }
+
+    #[test]
+    fn gaze_atlas_geometry_expression_mapping_and_limits_are_checked() {
+        let mut c = firefly().unwrap();
+        assert!(validate_gaze(&c, &GAZE_ATLAS[..24]).is_err());
+        c.gaze.atlas_size[0] += 1;
+        assert!(validate_gaze(&c, GAZE_ATLAS).is_err());
+        let mut c = firefly().unwrap();
+        c.gaze.iris_crops[0][0] = i32::MAX;
+        assert!(validate_gaze(&c, GAZE_ATLAS).is_err());
+        let mut c = firefly().unwrap();
+        c.gaze.expressions[0].face = 1;
+        assert!(validate_gaze(&c, GAZE_ATLAS).is_err());
+        let mut c = firefly().unwrap();
+        c.gaze.expressions[2].max_offset[1] = 2.;
+        assert!(validate_gaze(&c, GAZE_ATLAS).is_err());
+        let mut c = firefly().unwrap();
+        c.gaze.eye_center[0] = f32::NAN;
+        assert!(validate_gaze(&c, GAZE_ATLAS).is_err());
+        for mask in [
+            vec![],
+            vec![[1., 1.]; 3],
+            vec![[0., 0.], [301., 0.], [0., 10.]],
+            vec![[0., 0.], [f32::NAN, 1.], [0., 10.]],
+        ] {
+            let mut c = firefly().unwrap();
+            c.gaze.expressions[0].eyes[0].mask = mask;
+            assert!(validate_gaze(&c, GAZE_ATLAS).is_err());
+        }
+        for value in [0., -1., f32::INFINITY] {
+            let mut c = firefly().unwrap();
+            c.gaze.expressions[0].eyes[0].iris_rect[2] = value;
+            assert!(validate_gaze(&c, GAZE_ATLAS).is_err());
+        }
     }
 }
