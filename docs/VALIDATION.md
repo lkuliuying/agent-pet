@@ -2,11 +2,373 @@
 
 更新日期：2026-10-11。工程：`F:\Program\pet_desktop`。本文件记录本机证据，不表示 Windows 10/11 全部设备兼容性已经验收。
 
+## 可配置监控、后台额度及 Codex 会话：2026-10-11
+
+本节为当前实现及本轮证据，以下各节保留对应阶段的历史记录，不能据旧包或旧测试推断当前功能已完成真实环境验收。
+
+### 实现与边界
+
+- CPU、内存、GPU 三类独立规则：默认启用、达到或超过 90% 持续 30 秒、重复间隔 5 分钟。支持阈值 1–100%、持续 5–3600 秒且按 5 秒调整、间隔 1–60 分钟。沿用 5 秒采样和 GPU 最忙引擎口径。未知、低于阈值或关闭时重置连续计时；保存规则时立即重置计时和冷却，清除该类别排队消息。两次采样之间改动再改回也重置；1 分钟重复不再受固定消息去重压制。
+- 额度启动即查、常态 15 秒轮询，使用一个隐藏的自有 app-server 进程，处理更新通知，按桶和周期合并。关闭面板不取消服务；定时查询保留旧值，错误显示过期和更新时间，确认登录失效或账号改变时清空旧数据。单次初始化及查询共 10 秒期限，失败退避 2–60 秒；单帧 1 MiB、有界通道和最多 64 个额度窗口，不再按累计 4 MiB 断开。退出只回收自己的 Windows 作业。
+- 主会话适配只允许本机 `Codex Desktop` / `vscode` 来源，排除 CLI 和子代理。按进程启动时间发现最近文件，启动读取元数据及尾部最多 4 MiB，随后目录通知加每秒增量读取；名称索引也增量读取。大记录以 serde 白名单流式跳过正文，单条最大 64 MiB；来源退出、120 秒无新证据或格式不兼容显示待确认。只把名称、项目、标识和状态放入内存，不持久化或上传对话、工具参数及凭据。
+- 同步请求等待对应工具结果；异步问题等待实际用户消息，工具即时返回不会解除。普通问句不触发。结束／中断后移除当前列表，未回答的异步问题在正常轮次结束后仍保留。权限有请求标识时去重，无标识时分别提醒；文字为“发起了权限请求”，不推断自动审批在等人工。
+- 桥接协议 v2 兼容旧 v1，插件模板 0.2.0 提供 8 类 hook。一键接入只操作 `firefly-local` / `firefly-pet`，在桌宠自己的稳定数据目录部署，核对实际 `installedPath` 与已加载源文件，失败尝试恢复原市场登记。用户须在 Codex 中审阅、信任 hooks；程序不自动信任。`hooks/list` 的事件名使用 camelCase，与配置文件的 PascalCase 事件键不同。
+- 设置保留六模块共用草稿和统一保存。两处会话列表共享数据，询问／权限优先；设置页的接入操作位于长列表之前。新增 GPU、等待回答语音，重做权限及模拟权限语音，全部为原流萤固定离线音色。勿扰／全屏抑制更新列表但不积压语音；Codex 在前台也会提醒。
+
+### 已执行验证
+
+Cargo 命令通过项目现有 `scripts/native-cargo.ps1` 运行，均使用锁定的离线依赖。
+
+| 命令 | 本轮观察结果 |
+| --- | --- |
+| `scripts/native-cargo.ps1 test --locked --offline` | 最新完整执行：库 89、应用 4、hook 进程 1、额度进程 3，共 97 通过，0 失败，4 项环境测试按原有显式手动策略默认忽略。包含阈值相等、边界、独立冷却、保存重计时、同步／异步询问、乱序和同轮审批、旧协议、隐私白名单等 |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--lib','platform::integration','--locked','--offline')` | 2 通过；安装／失败回滚、中文空格路径、其他 hooks 保留、实际文件和各信任状态校验 |
+| `scripts/native-cargo.ps1 -CargoArguments @('clippy','--all-targets','--locked','--offline','--','-D','warnings')` | 通过，0 警告 |
+| `scripts/native-cargo.ps1 -CargoArguments @('fmt','--all','--','--check')` | 通过；仅格式化本轮修改的 Rust 文件，未全仓改写 |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--lib','real_desktop','--locked','--offline','--','--ignored','--nocapture')` | 真实账号只读额度查询通过，取得 1 个窗口；首次状态读取失败，排查及修复见下文，未隐藏失败 |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--lib','real_desktop_metadata','--locked','--offline','--','--ignored','--nocapture')` | 修复后单独复跑通过：确认本机 Desktop，重建 1 个当前会话，无格式不兼容，无历史提醒重播。未输出名称、正文、账号或凭据 |
+| `.runtime/verify-monitoring-cli.ps1 -Codex 'C:\Users\likecandy\AppData\Local\OpenAI\Codex\bin\2e5e00daee91c61d\codex.exe'` | 实际 CLI 0.162.0-alpha.17.2 的独立 `CODEX_HOME` 检查通过：0.1.0 升到 0.2.0，中文空格路径，8 类事件加载，逐文件哈希及已加载来源一致，保持 untrusted，已有 hooks 原字节不变。结果仅保留测试元数据，位于 `.runtime/monitoring-cli-20261011-192837/result.json`；未登记用户真实配置 |
+| `target/release/examples/ui_check.exe .runtime/monitoring-ui-20261011` | 初轮 78 张自身渲染截图和交互断言通过；此后新增滚动模式，再验证新增布局 |
+| `.runtime/monitoring-native-runners/ui_check.exe .runtime/monitoring-scroll-final-20261011 --monitoring` | 9 张截图及全部绑定断言通过：860×600、680×440 两种逻辑尺寸，3 类规则，长名称与 12 会话滚动，固定保存栏，关闭面板后共享额度由模拟 75% 更新为 64%，手动刷新合并 |
+| `git diff --check` | 换行问题修正后通过；只规范本轮编辑文件，不改其他用户文件 |
+
+额度常驻进程夹具覆盖通知和轮询交错、账号切换旧响应隔离、登录失效、请求合并、自建进程回收，以及连接累计超过 5 MiB 仍不断开；此测试不等于连续运行数日的稳定性验收。
+
+两轮增量语音生成使用原离线环境和同一权重，分别执行 `scripts/generate-voice.py` 的 `--only gpu,codex-question`、`--only codex-permission,demo-codex-permission`，其余参数见 `assets/voice/README.md` 的复现命令。资源测试核对全部 18 条 PCM 格式、可听能量与气泡内时长；未安装新依赖，未把模型加入交付包。
+
+初次完整测试因旧桌宠占用单实例而在 hook 夹具处停止；用户确认退出后完整通过。沙箱内曾出现本机路径和音频生成访问失败，转为正常本机权限后通过。真实记录首轮检测暴露大型正文和 Desktop 子代理来源差异，现已分别流式跳过正文及明确排除子代理；相应夹具与真实只读复跑均通过。真实 CLI 又发现 hooks/list 事件名大小写差异，已据真实返回修正适配和回归用例。滚动示例曾因关闭唯一窗口而提前退出，仅产生 8 张图；修正示例生命周期后明确检查 9 张图及结束断言通过。
+
+### 最终构建与本机运行
+
+- `scripts/native-cargo.ps1 -CargoArguments @('build','--release','--locked','--offline','--examples','--bin','PetDesktop')` 最终通过。应用 31,361,536 字节，SHA256 为 `e6b8058db1f42700639f0feb666e2f111b83ce9fc7800a2b6c8710954e524574`。
+- `.runtime/monitoring-native-runners/voice_check.exe --all` 通过本机实际音频设备播放全部 18 条，退出码 0；当前播放取消 5 ms，取消后未出现积压播放结果；退出释放音频 19 ms。验证程序复制自本轮 Release 示例构建以避免后续链接占用；不等于人工听感、英文发音及细微漏字已验收。
+- `scripts/smoke-desktop.ps1 -Binary target/release/PetDesktop.exe -SampleSeconds 20` 通过：真实应用用独立配置运行，stderr 为空、退出码 0、位置配置成功写入；20.002 秒样本 CPU 占整机 0.508%，Working Set 325.9 MiB、Private 421.8 MiB，24 个逻辑处理器。这里只是本机短时样本，不证明长期泄漏或其他设备兼容性。
+- PowerShell `Parser.ParseFile` 检查 `scripts/verify-package.ps1`、`scripts/package-windows.ps1`、`tests/verify_package.ps1` 通过。`Cargo.lock` 与实施前 SHA256 一致。当前文档的三类配置、后台刷新和白名单读取说明已对照最终源码复核。
+
+### 独立试用包校验
+
+本轮新建 `artifacts/FireflyPet-v0.1.0-windows-x64-20261011-194045/` 及同名 ZIP、`.zip.sha256`；历史交付原样保留。运行 `scripts/package-windows.ps1 -SkipBuild` 成功，包内桌宠和桥接 exe 均为上述最终构建。
+
+- `scripts/verify-package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-194045` 全部通过：清单、市场路由、两个 exe 一致性和 8 类事件实际投递到隔离接收端；每次返回 `{}`、退出码 0，初次校验分别耗时 348、130、127、120、124、124、124、126 ms。
+- `tests/verify_package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-194045` 5 组全部通过：中文空格路径正常；缺失 exe、两个 exe 不一致、错误 marketplace 路径及无投递脚本按预期拒绝。原交付包未被反例改写，夹具在 `.runtime/package-check-e7400d49c08b45d98f58226e7efeb12b`。
+- 使用 PowerShell / `ZipFile.OpenRead` 对 ZIP 内 606 个清单文件逐个 SHA256 核对，并复核 ZIP 与 `.zip.sha256` 一致；没有模型权重、Python、FFmpeg、外置 WAV、凭据或用户配置。补入本段验证记录后同步包内文档、重新计算清单与 ZIP 哈希，交付前再次核对。
+
+### 本轮记忆同步与保留范围
+
+读取指定项目记忆 `README.md` 和本文件后核对当前调用链。旧文档“仅展开时刷新”、固定 CPU／内存规则及三类 hooks 已被本轮替代，现同步后台刷新、规则配置、会话读取白名单／上限、安装及信任步骤、配置回退限制和验证边界。旧配置字段缺失使用默认值，非默认 `resource_alerts` 会被旧程序拒绝，回退前须在新版恢复相应默认并保存。没有新增记忆系统，也没有改全局记忆。
+
+实施前已有大量未提交修改，源码及资源基线与 SHA256 清单位于 `.runtime/monitoring-baseline-20261011-183327`。本轮在其上增量实现；`Cargo.lock`、既有表情／跟随、生成脚本等无关工作保持原样。仅增加现有 Windows crate 的 ToolHelp 功能标志，没有新增或升级依赖。未提交、推送或发布。
+
+### 仍需真实验收
+
+目前真实证据为本机只读额度、主会话元数据、隔离 CLI 安装／加载，以及原生 UI／音频 API。尚不能宣称以下场景已端到端通过：用户账号数值在关闭面板时发生变化、两个并行 Desktop 主会话、真实同步／异步问题及回答后恢复、实际权限请求与信任后的 Desktop hook 投递、真实勿扰／全屏场景、跨设备和多屏 DPI。夹具通过不能代替这些验收，程序不能代替用户授予 hooks 信任。
+
+实际验收顺序：启动本轮独立试用包；在设置保存需要的阈值和语音开关；点击安装／更新联动，在 Codex 中审阅并信任；重新检测后运行两个 Desktop 会话，核对询问／权限气泡、回答后的状态、勿扰不补播；关闭详情继续使用 Codex，至少等待 15 秒后重开核对额度和更新时间。不要为测试故意耗尽系统资源或破坏网络任务。
+
+## 内置流萤 0.3 语音：2026-10-11
+
+本节记录监控功能扩展前的 16 条语音验收；当前 18 条资源及本轮边界见上节。后文系统音色、SAPI 与音色枚举相关记录属于历史版本。
+
+### 实现与资源
+
+- 使用作者 0.3 `Firefly_v2ProPlus_20260403_DPO` 原始 GPT / SoVITS 权重及作者参考音频，模型归档 MD5 与另一作者镜像一致，SHA256、引擎固定修订与依赖均已记录。来源、许可边界和复现步骤见 `assets/voice/README.md`、`sources.json`、`generation.json` 与 `scripts/voice-generation-requirements.txt`。
+- 16 条固定语音编译进 exe，Windows `waveOut` 串行播放，音量在内存缩放采样，不改系统音量。语音线程不依赖 SAPI、模型服务或网络。旧 `voice_id` 只读取忽略，保存时省略；语音开关、音量、位置、表情和其他设置保留。
+- 首轮两条录音出现明显提前结束；使用相同权重、原文和切句方式，调整两条随机种子重新生成。最终全部为 32 kHz / 单声道 / PCM16，时长 1.438–6.083 秒，峰值 -1 dBFS，无满幅采样；最长句内低电平间隔 0.86 秒，没有截断正文。
+- 本地 Whisper 转写用于排查整句遗漏；有同音字和 `Codex` 英文识别差异，不作为人工听感通过的证据。完整试听合集位于 `artifacts/FireflyVoice-0.3-20261011-164423/试听合集.wav`，76.58 秒，逐条起点见同目录 `试听目录.md`。最终 WAV 与生成报告及转写报告的哈希一致。
+
+### 已执行检查
+
+以下 Cargo 命令均通过 `scripts/native-cargo.ps1` 配置当前进程 MSVC / Windows SDK 环境：
+
+| 命令 | 观察结果 |
+| --- | --- |
+| `scripts/native-cargo.ps1 test --lib voice --locked --offline` | 8 项语音专项测试通过；覆盖真实系统规则与 6 类 Codex 事件的音频映射、PCM 格式/边界、音量 0/100%、有界队列满时取消、停止后不补播、输出失败后重试、旧配置读写 |
+| `scripts/native-cargo.ps1 test --lib --locked --offline` | 69 通过，2 项既有环境测试按默认忽略 |
+| `scripts/native-cargo.ps1 test --locked --offline` | 用户保存并退出旧版后完整复跑通过：库 69、应用 4、hook 进程 1、额度进程 3，共 77 项通过，3 项既有环境测试默认忽略，0 失败。首次执行曾因旧版占用单实例而阻止 hook 夹具，未改测试或绕过保护 |
+| `scripts/native-cargo.ps1 test --test usage_process --locked --offline` | 完整测试被单实例保护阻止后，独立执行剩余进程夹具；3 通过，1 项真实账号测试按原设置忽略 |
+| `scripts/native-cargo.ps1 -CargoArguments @('clippy','--all-targets','--locked','--offline','--','-D','warnings')` | 通过；首次发现新增代码的 `manual_is_multiple_of` 提示，改用标准方法后复跑通过 |
+| `scripts/native-cargo.ps1 -CargoArguments @('fmt','--all','--','--check')` | 通过 |
+| `scripts/native-cargo.ps1 build --release --locked --offline` | 通过；exe 30,138,880 字节，SHA256 `ab3fba2df765a965ff2f2be9420defde2339d775cba9ac3ae75daed0a2dc9348` |
+| `scripts/native-cargo.ps1 build --example voice_check --example ui_check --locked --offline` | 两个验证程序构建通过 |
+| `target/debug/examples/voice_check.exe --all` | 本机实际音频设备依次播放全部 16 条，退出码 0；有 8 条积压时取消当前播放 15 ms，取消后未出现积压播放结果；播放中退出释放资源 18 ms |
+| `target/debug/examples/ui_check.exe .runtime/voice-ui-20261011-1648` | 退出码 0，78 张自身渲染截图及现有草稿/交互绑定断言通过；人工查看正常和较小窗口的语音页，固定音色、音量、试听、错误文字和保存栏均完整 |
+| `.runtime/voice-generation/venv/Scripts/python.exe .runtime/voice-generation/check_audio.py` | 16 条完成本地转写和波形检查；只作辅助核对，不等于音色、细微漏字及英文发音通过人工验收 |
+| `.runtime/voice-generation/venv/Scripts/python.exe .runtime/voice-generation/make_audition.py` | 核对 16 条音频与生成/转写记录哈希并生成合集，退出码 0 |
+| Python `ast.parse`、PowerShell `Parser.ParseFile`、`git diff --check` | 生成脚本、打包及包校验脚本语法通过，差异无空白错误；Cargo.lock 与实施前哈希一致 |
+| `scripts/package-windows.ps1 -SkipBuild` | 成功生成新的时间戳便携目录、ZIP 和 SHA256；完整包无 `.ckpt`、`.pth`、`.onnx`、Python、FFmpeg 或外置 WAV，ZIP 哈希复核通过 |
+| `scripts/verify-package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-165009` | 候选包的清单哈希、必需文件、路由和两个 exe 一致性检查完成；到消息夹具阶段因旧桌宠占用单实例返回“请先退出桌宠，再执行包夹具验证。”，整体退出码 1。不能称完整包验证通过 |
+| `scripts/verify-package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-165136` | 用户退出旧版后全部通过；Stop / PermissionRequest / Interrupt 实际送达隔离接收端，耗时 368 / 124 / 124 ms，均退出码 0、输出 `{}` |
+| `tests/verify_package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-165136` | 5 组夹具通过：中文空格目录、缺失 exe、两个 exe 不一致、错误市场路径、未投递事件的空操作脚本 |
+| `scripts/smoke-desktop.ps1 -Binary artifacts/FireflyPet-v0.1.0-windows-x64-20261011-165136/PetDesktop.exe -SampleSeconds 10` | 包内 exe 真实启动并使用隔离配置，退出码 0、stderr 为空、配置写入成功；10.001 秒样本 CPU 占整机 0.833%，Working Set 338.5 MiB、Private 437.6 MiB。exe 哈希与上列构建一致，不是长期资源或其他设备兼容性结论 |
+
+隔离生成环境的首次运行曾缺少 `matplotlib`、fastText 大模型；补齐上游资源后生成成功。转写工具的 PyAV 19 容器接口不兼容，检查脚本改为直接读取 PCM 并重采样到 16 kHz 后完成检查。这些依赖只用于资源制作，均未进入应用运行包。首次新增系统规则测试遗漏已有 GPU 字段，补齐默认字段后专项及库测试通过。
+
+### 验收边界与项目记忆
+
+原生播放检查验证了真实音频 API 的完成、停止及退出；无设备后的恢复由注入失败的工作线程测试覆盖，未断开用户音频设备。UI 夹具中的无设备文字为显式模拟状态，不能视为真实断开设备的验收。
+
+用户自行保存并退出旧版后，本轮确认其进程结束，完成独占测试、烟测和完整包校验。随后使用 `.runtime/voice-live-20261011-1701` 隔离配置启动同一包内 exe，通过 Computer Use 操作真实设置窗口并读取隔离配置交叉核对：
+
+- 初始旧配置含 `voice_id`、`voice=true`、`volume=70`，主程序正常读取；写回后移除旧音色字段，保留启用状态和音量。
+- 拖动音量到 35% 时显示未保存修改，磁盘配置仍为 70%；点击“保存并应用”后配置才变为 35%。执行双击试听未出现错误提示；单次试听可显示“正在按当前草稿音量试听流萤语音…”，随后恢复就绪提示。
+- 关闭、重新启用、再次关闭语音并保存，界面与配置保持一致；重启后关闭状态和 35% 音量仍保留。
+- 在消息页启用勿扰并保存，配置为 `quiet=true`；试听显示“勿扰期间不播放语音，关闭勿扰后可重新试听。”。解除勿扰并保存后，试听恢复，最终配置为 `voice=false`、`quiet=false`、`volume=35`。
+- 日常配置在正常用户上下文中复核 SHA256，与启动测试前一致；测试没有替用户保存或丢弃旧版草稿，也没有写入日常设置。
+
+透明桌宠的工具窗口未被桌面工具列出，用户从桌宠菜单打开普通设置窗口后完成上述操作。第一轮测试到 10 分钟自动退出时间，勿扰保存尚未完成；第二轮重新启动后完成勿扰验证。两次尝试从试听到保存关闭语音的工具调用间隔均超过该条 6.083 秒时长，因此不据此声称真实界面在播放中停止的时延已验收；播放中停止、清空积压及退出释放资源的证据来自上列原生 `voice_check` 与工作线程测试。第二轮操作完成后仅结束已核实路径、参数和 PID 的隔离测试进程，这次清理不计作正常退出验收。真实界面中途停止/退出、物理断开输出设备与最终听感仍需人工试用确认。
+
+本轮读取 README 和本验证记录并对照源码，实施前系统语音说明与旧实现一致。README 已同步离线播放、固定音色、独立取消、旧配置兼容、模块职责和新增文案流程；新增语音资源说明记录准确来源与生成参数。历史记录保留并标注适用版本，没有新建独立项目记忆体系。已有其他未提交 diff 与实施前记录一致，未提交、推送或发布，未修改 Windows 语音组件及日常配置。
+
+## 角色表情设置：2026-10-11
+
+### 实现与证据边界
+
+- 在原生设置窗口新增“角色表情”，按基础待机、待机眨眼、键盘输入、点击、闲置、拖动、消息七个场景配置已有六张表情。基础待机必选，其他场景可“不切换”。页内预览不会改变桌面角色、已应用配置或草稿；场景下拉框修改草稿并预览，保存成功才应用。恢复默认只重置表情草稿。
+- 初始值、可调整范围与优先级见 README 的“角色表情设置”。计时和图片选择按场景解耦；保存新的表情配置后清理旧点击/拖动瞬态，保留当前输入与提醒上下文。提醒仍统一跟随气泡，未修改 Codex hooks 协议、气泡时长或语音逻辑。
+- 新增可选 `expressions` 配置；缺失字段补默认，使用稳定名称和整数毫秒，非法枚举、负数、越界时间及眨眼持续时间不小于间隔时拒绝保存。默认对象不落盘，恢复默认保存后可供旧版读取；旧版不能直接读取自定义表情字段。保留原有配置原子写入、损坏备份和先保存后生效机制。
+- 提取共享角色图层供桌面角色和页内预览使用，原图集和眼部素材未改。没有新增依赖或修改 Cargo.lock，没有安装、提交、推送或修改远程资源。实施前副本和原始差异保存在 `.runtime/expression-baseline-20261011-140452`。
+
+### 已执行验证
+
+以下命令在工程目录运行。涉及命名管道、原生 UI 和打包的命令在正常用户会话中执行；测试与启动配置使用隔离目录。
+
+| 命令 | 观察结果 |
+| --- | --- |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--locked','--offline','--lib','expressions')` | 6 项通过，覆盖表情时间边界、优先级、禁用、重复交互、相同图片映射及原有闭眼合成测试 |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--locked','--offline','--bin','PetDesktop')` | 4 项通过，覆盖表情草稿转换、非法草稿及已有设置保留 |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--locked','--offline')` | 最终退出码 0；61 项库测试、4 项主程序测试、1 项 hook 进程测试、3 项额度进程测试，合计 69 项通过；3 项需要真实账号或 GPU 的手动测试保持忽略；文档测试 0 项 |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--locked','--offline','--test','hook_process','--test','usage_process')` | 用户退出旧桌宠后的定向复验通过，后续完整测试也通过 |
+| `scripts/native-cargo.ps1 -CargoArguments @('clippy','--all-targets','--locked','--offline','--','-D','warnings')` | 退出码 0 |
+| `scripts/native-cargo.ps1 -CargoArguments @('fmt','--all','--','--check')` | 最终退出码 0 |
+| `scripts/native-cargo.ps1 -CargoArguments @('build','--release','--locked','--offline','--bin','PetDesktop','--example','ui_check')` | 最终退出码 0；交付 exe SHA-256 为 `4f5501d89665f3022ddd184fa61a260c1bd980786219ba1ec0e9769c2c8775b2` |
+| `target/release/examples/ui_check.exe .runtime/expressions-ui-verified-20261011-142703` | 78 张自身渲染截图；六表情预览、860×600 / 680×440 两种布局、滚动末尾、固定保存栏、六模块草稿、预览隔离、恢复默认及原有菜单/四框交互断言通过 |
+| `target/release/examples/ui_check.exe .runtime/expressions-gaze-verified-20261011-142741 --gaze` | 324 张自身渲染截图，覆盖三种角色大小、两种朝向、六表情、九注视方向；原有镜像手部和拖动释放断言通过 |
+| `python .runtime/validate-gaze-matrix.py .runtime/expressions-gaze-verified-20261011-142741` | 216 组像素比较通过；闭眼不变化，睁眼注视变化限于脸部区域。Python 启动器有路径定位警告，但脚本执行完成、生成 pixel-check.json，退出码 0 |
+| `scripts/smoke-desktop.ps1 -SampleSeconds 10` | 最终新版正常启动并自动退出，退出码 0、无 stderr、隔离配置含位置；报告 exe 哈希与交付构建一致 |
+| `scripts/package-windows.ps1 -SkipBuild` | 生成时间戳免安装目录、ZIP、SHA-256 文件和依赖许可，无覆盖旧包 |
+| `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/verify-package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-142954` | 候选包清单、路由、exe 一致性及 Stop / PermissionRequest / Interrupt 三类消息实际送达隔离接收端均通过，退出码 0。候选包用于记录本节验证结果，最终交付包包含此记录并另做同项校验 |
+| `git diff --check` | 通过，无新增空白错误 |
+
+最终可视检查使用 `.runtime/expressions-ui-verified-20261011-142703`，普通与最小窗口均能滚动到消息规则末尾，保存栏始终可见。用 `Get-FileHash` 对照旧 `.runtime/compact-ui-20261011-132432`，38 张角色截图完全相同；对照旧 `.runtime/gaze-ui-final-20261011`，324 张眼部截图完全相同。共享图层提取没有改变这些固定场景的渲染结果；截图及程序化事件属于测试夹具，不等于人工鼠标、键盘或真实多屏 DPI 验收。
+
+### 失败、修复与排除的证据
+
+- 第一次完整测试被正在运行的旧试用包占用单实例保护而中止，错误为“请先退出桌宠再运行 hook 进程测试”。未绕过保护；用户确认退出后，定向与完整测试均通过。
+- 首次编译发现共享组件根元素的镜像变换不生效警告，已把变换移至内部角色图层；同时改用 Slint 当前 `content-y` 属性。最终构建无这些警告，旧图像逐字节对比通过。
+- 沙箱中的 rustfmt 两次报 `拒绝访问。 (os error 5)`，随后使用正常用户环境完成限定文件格式化；第一次全局格式检查提示示例模块顺序，修正后检查通过。
+- 首轮小窗口末尾截图使用了尺寸改变前的滚动范围；验收程序增加一次布局等待，最终截图已显示末尾及保存栏。
+- 一次 Release 构建期间提前启动自建 ui_check，造成 `LNK1104` 文件占用。仅结束已核实的本轮检查进程，再等待构建成功后重新验证。该轮旧 exe 启动结果、`expressions-ui-final-20261011-142400` 和中断的眼部截图均排除在最终证据之外。最终启动证据必须匹配上述新 exe 哈希。
+
+### 待用户试用
+
+1. 解压最终交付 ZIP，启动其中 `PetDesktop.exe`，从右键或托盘进入“完整设置 → 角色表情”。
+2. 切换六种页内预览，桌面角色应继续原有行为。把点击表情改为其他表情、调整持续时间，保存后点击桌面角色确认效果；拖动与状态小框仍可正常使用。
+3. 将输入表情设为“不切换”，保存后键盘和手部同步应继续工作；设置闲置等待时间并观察切换。暂停键盘同步不停止空闲计时，鼠标活动不重置它。
+4. 在其他模块保留未保存的大小或音量，再到表情页恢复默认，其他草稿应保持；保存、退出并重启后配置应仍有效。回退旧版前必须先在新版恢复默认表情并保存。
+5. 真实物理输入、多屏/DPI、全屏抑制及实际账号环境仍需试用。本轮不重跑真实额度/GPU 查询，先前记录属于历史证据；真实 Stop / PermissionRequest / Interrupt 会话验收继续见下文。本轮未使用 `--codex-test` 作为真实接入证据。
+
+本轮共修改或新增 13 个源码/文档文件：`src/expressions.rs`、`src/app/expression_settings.rs`、`src/app.rs`、`src/config.rs`、`src/lib.rs`、`src/ui_state.rs`（仅增加相关测试）、`ui/character.slint`、`ui/expression-settings.slint`、`ui/settings.slint`、`ui/app.slint`、`examples/ui_check.rs`、`README.md`、`docs/VALIDATION.md`。已读取指定项目记忆 README 及素材说明；README 的五模块描述、固定困倦时长描述与本轮实现不再一致，已依据源码和原生截图更新为六模块、可配置规则、共享图层职责和配置回退要求。未新增记忆系统，未修改全局记忆。
+
+## 四框状态条与 Codex Desktop 识别：2026-10-11
+
+### 实现与证据边界
+
+- 已按用户确认的四框预览实现原生 Slint 状态条：CPU、内存、GPU、Codex 同排，352×32 逻辑像素；点击 Codex 展开各额度窗口、重置时间和刷新入口。默认没有大标题和大按钮，详情关闭不停止状态条的周期刷新，整个状态条关闭仍取消查询。
+- Codex 继续使用现有短生命周期 stdio app-server 协议。PATH 中没有 exe 时，自动探测本机已核实的 Desktop `LOCALAPPDATA/OpenAI/Codex/bin/<16 位十六进制目录>/codex.exe` 布局，排除 `.bak`、缺失 exe、相对路径，多个候选按 exe 修改时间排序。没有修改 PATH、Codex 配置或登录状态，没有读取凭据文件。
+- GPU 接入既有 5 秒系统采样线程，通过原生 PDH 读取引擎计数器；同一硬件引擎跨进程相加后取最忙引擎，不合计并行引擎，不将未知显示为 0。新增的只是现有 windows 0.62.2 的 Performance feature；Cargo.lock 与实施前哈希相同。
+- 实施前源码副本及 Git 差异保存在 `.runtime/compact-status-baseline-20261011-131238`。此前鼠标跟随和 hooks 修复均保留，没有提交、推送或更新远程资源。
+
+GPU API 依据：[PdhGetFormattedCounterArrayW](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhgetformattedcounterarrayw)、[语言无关计数器](https://learn.microsoft.com/en-us/windows/win32/api/pdh/nf-pdh-pdhaddenglishcounterw)、[Microsoft 对最忙引擎口径的说明](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/)。并不保证桌宠与任务管理器不同采样时刻的读数完全相同。
+
+### 已执行验证
+
+下列 Cargo 命令通过现有 `scripts/native-cargo.ps1` 执行，使用锁定离线依赖；真实设备与账号检查单独显式运行。
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `scripts/native-cargo.ps1 check --all-targets --locked --offline` | 通过 |
+| `scripts/native-cargo.ps1 test --locked --offline` | 最终 54 个库测试、1 个应用测试、1 个 hooks 进程测试、3 个额度进程测试通过，合计 59 项；3 项真实环境测试默认忽略，本轮均另行显式执行通过 |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--lib','real_','--locked','--offline','--','--ignored','--nocapture')` | 两项通过：查找输入不含 Codex PATH 时，Desktop 自动发现及真实只读额度接口返回 1 个额度窗口；真实 GPU 计数器返回有效 0–100% 读数。账号测试只打印窗口数，没有输出账号或原始响应 |
+| `scripts/native-cargo.ps1 test --test usage_process --locked --offline` | 3 项进程夹具通过，覆盖协议顺序、失败分类、超时、取消和子进程回收；原有真实账号测试按默认忽略 |
+| `target/debug/deps/usage_process-5434131892a90065.exe real_codex_quota_read_only --exact --ignored --nocapture` | 在独立子进程中将 PATH 设为 Windows Machine 与 User PATH 的组合，去掉 Codex 会话临时附加目录；生产 `query()` 自动发现 Desktop 并真实返回 1 个额度窗口。子进程退出码 0，没有修改持久环境变量 |
+| `scripts/native-cargo.ps1 -CargoArguments @('clippy','--all-targets','--locked','--offline','--','-D','warnings')` | 最终通过 |
+| `scripts/native-cargo.ps1 -CargoArguments @('fmt','--all','--','--check')` | 通过；首次在受限会话格式化遇到 `os error 5`，正常用户环境复跑成功 |
+| `scripts/native-cargo.ps1 build --example ui_check --locked --offline` 与 `target/debug/examples/ui_check.exe .runtime/compact-ui-20261011-132432` | 退出码 0，62 张自身渲染缓冲区截图及绑定断言通过。覆盖四框尺寸、100%、未知、失败文字、详情展开收起、长名称、多额度滚动、共享刷新、原有点击和拖动分流 |
+| `scripts/native-cargo.ps1 build --release --bins --examples --locked --offline`，最终 `scripts/native-cargo.ps1 build --release --bin PetDesktop --locked --offline` | 通过；最后一次只整理 Slint 缩进与 LF 换行后重新构建交付 exe |
+| `scripts/smoke-desktop.ps1` | 最终 Release 在独立数据目录中启动，配置 v1 与位置写入成功，stderr 为空，正常退出码 0；没有读写日常桌宠配置 |
+| `scripts/package-windows.ps1 -SkipBuild` | 成功生成时间戳独立交付包，包根和插件 exe 均为下方 Release 哈希，保留旧交付 |
+| `scripts/verify-package.ps1 -Directory <本轮交付目录>` | 必需文件、全部哈希、marketplace/hooks 路由、两个 exe 一致性通过；Stop、PermissionRequest、Interrupt 三类消息均被隔离接收端收到，中立退出码 0 |
+| `tests/verify_package.ps1 -Directory <本轮交付目录>` | 中文空格路径正常；缺失 exe、两个 exe 不同、错误市场路径和空操作 hooks 四项反例均按预期拒绝，共 5 项通过 |
+| `Get-FileHash` 与 ZIP 条目流 SHA-256 核对 | ZIP 校验文件匹配；603 个文件中，602 项内容逐一匹配包内清单，另 1 项为清单本身；没有未登记文件 |
+| `git diff --check` | 通过 |
+
+首次全套测试在旧桌宠占用单实例锁时明确失败，未向旧桌宠发送测试 hooks；用户从托盘退出后完整复跑通过。首次原生截图暴露了 100% 文本溢出和展开后状态条布局偏移，已缩小框内间距并固定状态条容器；相同截图和点击断言复跑通过，没有删减失败断言。
+
+最终可视检查使用 `.runtime/compact-ui-20261011-132432`：正常状态、三项 100%、未连接、连接失败、未知、展开错误详情、多额度滚动均无相邻文本覆盖。截图数据为夹具，仅证明原生布局及绑定行为，不是真实账号截图或人工物理输入验收。
+
+最终 Release exe SHA-256：`f40b53d8584425e340383f6f5fda77a73b0286b5cc4b1655cd0cd681b50b2018`。以实施前 Git 差异逐文件比较，12 个非本轮变更文件保持一致；未改动原有配置格式、角色素材、锁文件、hooks 定义或打包脚本。
+
+### 试用步骤与未验证项
+
+1. 退出旧桌宠，解压本轮独立试用包并启动根目录 `PetDesktop.exe`，不要覆盖正在运行的旧目录。
+2. 左键点角色，检查 CPU、内存、GPU、Codex 四框同排；GPU 初次采样为未知，等待约 5 秒后检查读数。点击外部、Esc、再次点角色和拖动分别检查关闭行为。
+3. 不添加 Codex 专用 PATH，保持本机 Desktop 的正常登录环境。点击 Codex 小框检查额度详情与刷新；如果显示“未登录”或其他状态，记录具体文字，不将它与 hooks 接入状态混同。
+4. 对照同一账号、工作区和时刻的 Codex 界面核对额度；测试面板收起后不再周期查询、重新打开可刷新。实际账号与 Desktop 界面是否完全一致、多 GPU 设备、不同驱动、真实多屏/DPI 和人工物理点击仍待用户试用。
+5. 本轮没有运行 `--codex-test`。真实 Stop / PermissionRequest / Interrupt 会话投递仍按下一节步骤单独验收；59 项自动测试、真实额度读取和 GPU 采样均不能替代这三项证据。
+
+已同步指定项目记忆 README 的尺寸、交互、查找顺序、GPU 指标口径、错误语义与模块职责；旧说明中的 PATH 唯一前提和 320×420 面板描述已更新，以下旧轮次记录保留作历史证据。
+
+本轮源码变更清单：`Cargo.toml`（启用现有 Windows Performance 功能）、`src/platform/gpu.rs`（新增原生采样及聚合测试）、`src/platform/mod.rs`、`src/platform/system.rs`、`src/notices.rs`（采样接入与字段）、`src/platform/codex_usage.rs`（Desktop 自动发现与验证）、`src/usage.rs`（紧凑额度摘要和错误提示）、`src/app.rs`、`src/app/usage_panel.rs`（GPU 与四框绑定）、`ui/status-panel.slint`（四框与详情布局）、`examples/ui_check.rs`（布局/交互验证）、`README.md`、`docs/VALIDATION.md`（项目记忆和验收记录）。本轮没有修改其余已有变更文件。
+
+## Codex 本地插件接入审计与验收：2026-10-11
+
+**当前结论：范围内的桥接修复、包命令投递测试和隔离 Codex 加载检查通过；真实 Codex 会话的 Stop / PermissionRequest / Interrupt 三项均未验收。** 本节没有运行 `--codex-test`，也不把手工输入 hook JSON、加载清单、管道测试或历史模拟截图当作真实会话证据。
+
+### 配置与调用链核对
+
+- 检查现有历史包 `artifacts/FireflyPet-v0.1.0-windows-x64-20261010-233331`：marketplace、plugin manifest、hooks.json、notify.cmd 与源码模板的 SHA-256 分别相同。marketplace 根为包内 `codex-marketplace`，目录引用相对于该根；manifest 显式引用 `./hooks/hooks.json`，桥接 exe 位于插件根目录。没有发现路径、事件名称或异步超时配置错误，因此保留模板。
+- 本机 CLI 为 `codex-cli 0.162.0-alpha.17.2`。`codex plugin marketplace list --json` 的日常 CLI 环境没有 `firefly-local`，缓存目录也没有该市场。这里只核实 CLI 环境，未读取或修改凭据；桌面应用是否使用同一个配置环境仍须在实际客户端确认。
+- 在 `.runtime/codex-acceptance-20261011-114415/isolated-codex` 中安装历史包，调用实际 `codex app-server` 的 `initialize`、`hooks/list`。三项均为 `source=plugin`、`enabled=true`、`async=true`、`timeoutSec=2`，`errors` 和 `warnings` 为空；`${PLUGIN_ROOT}` 被解析为该隔离缓存的绝对路径。三项均为 **`trustStatus=untrusted`**，没有自动信任、绕过信任、创建模型会话或调用账号接口。加载结果保存在同一验收目录的 `loader-result.json`，只含本地插件元数据。
+- 换到新时间戳候选包时，CLI 实际返回 `marketplace 'firefly-local' is already added from a different source; remove it before adding this source`。在上述隔离环境中执行 `codex plugin marketplace remove firefly-local` 后重新登记新来源、安装插件成功；缓存 exe 的 SHA-256 已变为本轮新程序哈希，三类 hooks 加载仍无错误且均未信任。新结果另存为 `loader-result-FireflyPet-v0.1.0-windows-x64-20261011-115229.json`，旧证据未覆盖。
+- 输入必须具备事件名、`session_id`、`turn_id`；当前官方文档对三类事件均定义 `turn_id`，没有证据支持放宽成随机或空标识。解析保留 1 MiB 限制及正文剥离，管道仍使用 v1 五字段、2048 字节上限和当前用户 DACL。
+
+官方依据：[插件打包与本地市场](https://developers.openai.com/plugins/build/plugins)、[hooks 事件、异步运行和信任规则](https://learn.chatgpt.com/docs/hooks)。按本机实际加载结果确认占位符和 schema 兼容；官方说明不能替代当前客户端的运行验收。
+
+### 已修复问题及证据
+
+| 问题 | 修复与验证 |
+| --- | --- |
+| `WaitNamedPipeW(150)` 只等一次，随后 `CreateFileW` 也只尝试一次；管道短时占用或并发争用会丢事件 | 先尝试连接，只对暂忙/尚未创建做总计 500 ms 内的重试，写入仍有 200 ms 等待且不重复写。旧实现遇到 220 ms 占用实际失败，报 `0x80070079`；修复后同一用例及 8 路并发均通过 |
+| 同一轮的多个审批共用去重 key，5 分钟内后续审批不显示 | 每次接收 `PermissionRequest` 生成内存序号，保留 Stop / Interrupt 的同轮去重；单元测试实际经过提醒队列，两个审批均可取出。未扩展输入字段或管道协议 |
+| 包校验仅验证 `{}` / exit 0，缺少 exe 或空操作也会通过 | 校验必需文件及哈希覆盖、市场路由、manifest、三类事件及双 exe 一致性，再启动独立接收端检查实际消息。旧脚本在缺少桥接 exe 的夹具上仍三项成功，新脚本正确拒绝；返回 `{}` 却不投递的脚本同样被拒绝 |
+| 进程测试手工输入 JSON，却可误投递到正在运行的用户桌宠 | 测试和包校验占用桌宠单实例锁，只接入自己创建的接收端；已有桌宠时明确停止验证。生产 hook 始终中立退出的行为保留 |
+
+### 本轮执行记录
+
+工作目录均为 `F:\Program\pet_desktop`。命名管道与 Rust 验证在正常 Windows 用户环境执行；没有安装或升级依赖。
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `scripts/native-cargo.ps1 -CargoArguments @('test','--lib','platform::ipc::tests::local_pipe_transports_and_reconnects','--locked','--offline','--','--exact')` | 先复现旧发送逻辑失败，再用同一用例验证修复通过；覆盖空闲客户端回收、畸形/超长消息、重连、8 路并发及停止 |
+| `scripts/native-cargo.ps1 test --locked --offline` | 51 个库测试、1 个应用绑定测试、1 个 hooks 进程测试、3 个额度进程测试通过，合计 56 项；原有真实账号测试继续忽略，未查询账号 |
+| `scripts/native-cargo.ps1 -CargoArguments @('clippy','--all-targets','--locked','--offline','--','-D','warnings')` | 通过 |
+| `rustfmt --edition 2024 src/bridge.rs src/platform/ipc.rs tests/hook_process.rs` | 仅格式化本轮三个 Rust 变更文件 |
+| `scripts/native-cargo.ps1 -CargoArguments @('fmt','--all','--','--check')` | 最终通过 |
+| `scripts/native-cargo.ps1 build --release --locked --offline` | 通过；exe SHA-256 为 `c3d0562625f6699f7697a2687b79343ae4d25b4aed1ca7da3d7208dd1155b5d5` |
+| `scripts/verify-package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261010-233331` | 增强脚本验证历史包成功，三类消息在隔离接收端实际收到，exit 0 / `{}`；不是 UI 或会话证据 |
+| `tests/verify_package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261010-233331` | 中文空格目录通过；缺少 exe、exe 不一致、错误市场路径、无投递脚本四个反例均按预期拒绝 |
+| `python .runtime/codex-acceptance-20261011-114415/inspect_loader.py artifacts/FireflyPet-v0.1.0-windows-x64-20261010-233331` | 隔离安装及实际 app-server 加载通过；三项未信任，未触发会话 |
+| PowerShell `Parser.ParseFile` 与 `git diff --check` | 脚本语法及差异空白检查通过 |
+| `scripts/smoke-desktop.ps1 -SampleSeconds 2` | 候选桌宠退出码 0，stderr 为空，隔离配置创建、启动及自动退出通过；没有触发 hooks，不能据此证明 UI 收到事件 |
+| `scripts/package-windows.ps1 -SkipBuild` | 生成初验包 `FireflyPet-v0.1.0-windows-x64-20261011-115229`，程序与插件副本使用本轮同一 exe，历史交付包保持原样 |
+| `scripts/verify-package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-115229` | 新包哈希和三类消息实际投递通过，分别为 358 / 127 / 119 ms，均 exit 0 / `{}` |
+| `tests/verify_package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-115229` | 新候选包的正常路径及四个故障反例均通过 |
+| `powershell.exe -NoProfile -File tests/verify_package.ps1 -Directory artifacts/FireflyPet-v0.1.0-windows-x64-20261011-115229` | Windows PowerShell 5.1 复核通过，中文 UTF-8 BOM 脚本和异步管道调用兼容 |
+| `python .runtime/codex-acceptance-20261011-114415/inspect_loader.py artifacts/FireflyPet-v0.1.0-windows-x64-20261011-115229 --replace-isolated-source` | 仅更换本轮隔离市场，安装成功；缓存 exe 哈希与候选一致，三项 hooks 无加载错误、均未信任 |
+
+开发中间失败均已区分：首次在受限环境运行隔离加载时返回 `failed to canonicalize CODEX_HOME ... os error 5`，正常用户环境复跑通过；首次直接把 `--exact` 传入包装脚本被 PowerShell 参数转发规则影响，改用上述 `-CargoArguments` 数组；测试初稿跨线程移动 Win32 handle 导致 `E0277`，改为创建线程持有并释放句柄；首次格式检查指出本轮文件排版问题，限定文件格式化后复核通过。这些不作为产品测试通过的证据。本记录补充后重新生成最终时间戳候选包，exe 和插件模板与初验包相同，最终 ZIP 文件名及哈希以交付清单为准。
+
+### 真实会话验收步骤
+
+1. 使用同一候选包中的桌宠和插件。退出旧桌宠后启动包根目录 `PetDesktop.exe`。设置中开启“接收 Codex 事件”，关闭勿扰，避免全屏/演示状态；语音可关闭。确保其他提醒已经播完。当前提醒队列最多 12 条、有效期 45 秒、每条展示 7 秒，不能把无气泡直接归因于 hook 未送达。
+2. 在实际使用的本地 Codex 环境中从该包运行 README 的市场登记与安装命令。用 `codex plugin marketplace list --json` 核对市场根；用 `codex plugin add firefly-pet@firefly-local --json` 返回的 `installedPath` 查缓存 exe，分别对缓存 exe 和包根 exe 执行 `Get-FileHash -Algorithm SHA256 -LiteralPath <exe绝对路径>`，应与上表相同。若同名市场指向旧包，先记下旧来源路径，仅执行 `codex plugin marketplace remove firefly-local` 后从新包重跑登记和安装，不要删除整个插件缓存或其他配置。以安装结果的实际路径为准，不假定缓存目录名一定是 `local`。
+3. 重启实际客户端并打开一个**本地编排且本地执行**的普通主会话，在 hooks 管理页（CLI 为 `/hooks`）核对三类事件、解析后的命令、启用状态和受信任状态。由用户审阅并信任当前定义；不使用跳过 hook 信任的启动参数，不修改审批/沙箱策略。CLI 安装环境不同、插件未启用或 hooks 未信任时先记录阻塞，不继续声称接通。
+4. 按下表逐项触发，记录客户端版本、包/缓存 exe 哈希、当地时间与时区、会话及轮次标识、Codex hook 运行状态、桌宠设置页状态和气泡。只保存这些验收元数据及裁剪后的相关界面，不保存提示词、工具参数、回复正文、transcript 或凭据。每一项都要同时具备 **Codex 触发/运行证据和桌宠接收/显示证据**。
+5. 退出桌宠，再触发结束、一个无害审批和主动中断，确认会话/审批不被桌宠离线阻塞。重新启动桌宠后触发新事件，确认恢复接收；不会补发离线时已丢弃的事件。
+
+| 事件 | 真实触发方式 | 通过条件 | 当前状态 |
+| --- | --- | --- | --- |
+| Stop | 新会话发送“只回复：桌宠 Stop 验收”，等正常回复结束 | Codex 的 Stop hook 成功，桌宠接收状态为 Stop，气泡为“Codex 这一轮回复结束了。”；不据此宣称任务成功 | 未验证 |
+| PermissionRequest | 发起需要正常审批的无害操作，例如请求通过审批执行仅输出 `FIREFLY_PERMISSION_ACCEPTANCE` 的 `Write-Output` 命令；没有审批路径的普通工具调用不算 | Codex 确认实际发起 PermissionRequest；桌宠提示审批请求；审批仍由正常机制决定。另在同一轮产生第二次独立审批并等待前条气泡结束，确认第二次也能提示 | 未验证 |
+| Interrupt | 请求执行 `Start-Sleep -Seconds 20` 等无害等待，在主会话运行中点击停止；保持会话窗口开启 | Codex 确认 Interrupt hook 运行，桌宠显示“这一轮已中断。”；空闲时点停止、关闭窗口或子代理中断不算本项证据 | 未验证 |
+| 离线与恢复 | 按步骤 5 关闭/重启桌宠并重复触发 | 无桌宠时会话正常，重启后新事件可达，无历史事件补播 | 未验证 |
+
+审批被自动处理不意味着没有 PermissionRequest；反之，仅看到了审批 UI 也不能代替 hook 运行记录。异步 hooks 的完成顺序可能不同，会话直接结束会取消未完成后台 hook，真实验收时要留出处理时间。不要仅以任何 `simulated=false` 消息认定来源真实：同用户进程也能手工发消息，协议不具备 Codex 进程身份认证。
+
+### 故障定位与尚未验证的边界
+
+按“实际客户端发现市场 → 安装缓存哈希 → hooks 加载/信任 → 事件确实触发 → hook 运行/超时 → 管道 → 设置接收状态 → 气泡”定位。设置页已经显示接收事件而气泡没有显示时，检查接收开关、勿扰/全屏抑制、队列过期及已有气泡；这些条件不等于桥接失败。输入无效、exe 缺失和通道失败仍可中立退出，所以 exit 0 不是投递证明。
+
+连接总期限、有限队列、桌宠离线和系统负载下仍是尽力通知，没有持久化、重放或应用层确认。尚未验证实际桌面客户端的信任界面、真实三类 hooks、气泡/语音和客户端更新后的兼容性。没有为了验证自动信任 hooks、替用户审批或改写日常 Codex 配置。
+
+实施前读取指定项目记忆 README、既有验证记录及桥接/队列调用路径，保留鼠标跟随等已有未提交工作。原 README 的 150 ms 单次连接描述与旧代码一致；本轮同步为有界重试，并记录审批去重和测试隔离规则。历史记录本就注明真实接入未完成，未发现把模拟误标为真实的记忆冲突。没有新建独立项目记忆或修改全局记忆，模板和依赖保持原状。
+
+## 鼠标转向与瞳孔追踪：2026-10-11
+
+按确认方案实现角色、双手、键盘整体镜像和四种睁眼表情的独立瞳孔追踪。默认常开，不增加设置字段；暂停键盘同步、勿扰和穿透不参与跟随控制。复用现有 16 ms UI 定时器，每至少 32 ms 采样全屏鼠标坐标；固定中心线、左右各 16 逻辑像素缓冲区及 100 ms 持续判定用于转向，拖动期间锁定。坐标换算包含窗口物理位置、系统 DPI、角色缩放、顶部留白与呼吸偏移，失败时保持朝向、瞳孔平滑回中。
+
+新增 `src/gaze.rs` 与 `src/gaze_render.rs`，分离跟随状态与眼部合成。通过内置 imagegen 新增 `assets/firefly/gaze.png`，原始 `atlas.png` 保持原字节；生成提示和校准规则记录于资源说明。眼白替换旧虹膜，活动虹膜受每种表情的多边形遮罩限制；遮罩外像素以及闭眼表情保持原样。素材只启动时解码，遮罩预计算，缓存最后一帧，未增加依赖、线程或鼠标钩子。
+
+### 自动检查与原生渲染证据
+
+以下命令均在工程目录执行：
+
+| 命令 | 实际结果 |
+| --- | --- |
+| `scripts/native-cargo.ps1 test --lib --locked --offline`（初次受限会话） | 48 项通过，现有命名管道测试失败：`0x80070002`；受限会话无法发现测试自身的管道，随后正常用户环境复跑通过 |
+| `scripts/native-cargo.ps1 test --locked --offline`（最终正常用户环境） | 50 项库测试、1 项应用绑定测试、1 项 hooks 进程测试、3 项额度进程测试通过，合计 55 项；真实账号测试保留默认忽略，本轮未查询真实账号 |
+| `scripts/native-cargo.ps1 -CargoArguments @('clippy','--all-targets','--locked','--offline','--','-D','warnings')` | 最终通过；首次受限会话查找配置返回 `os error 5`，正常用户环境发现一处新增数组引用的 `into_iter` 提示，改为 `iter` 后复跑通过 |
+| `scripts/native-cargo.ps1 -CargoArguments @('fmt','--all','--','--check')` | 正常用户环境通过；受限会话的 rustfmt 曾返回 `os error 5`，没有绕过检查 |
+| `rustfmt --edition 2024 --check tests/support/usage_fixture.rs` | 通过 |
+| `scripts/native-cargo.ps1 build --release --bins --examples --locked --offline` | 最终正式程序与两个原生示例构建通过 |
+| `target/debug/examples/ui_check.exe .runtime/gaze-ui-final-20261011 --gaze` | 最终边界修正后退出码 0；保存 324 张自身渲染缓冲区截图，覆盖 3 个大小、2 个朝向、6 个表情及 9 个注视方向；左右手映射和拖动释放断言通过 |
+| `python .runtime/validate-gaze-matrix.py .runtime/gaze-ui-final-20261011` | 216 组像素比较通过：闭眼表情不变，睁眼注视变化限制在脸部区域；代码单元测试进一步验证变化不超出眼睛遮罩 |
+| `target/release/examples/ui_check.exe .runtime/gaze-ui-regression-20261011` | 退出码 0；保存 58 张原生回归截图，模块草稿、关于页保存按钮、右键分流、Esc、左键开关、拖动关闭及取消查询断言通过 |
+| `scripts/smoke-desktop.ps1`（边界修正前单独运行） | 退出码 0，stderr 为空，隔离配置 v1 与位置写入通过，自动退出通过；目录 `.runtime/smoke-20261011-110735` |
+| `scripts/smoke-desktop.ps1 -SampleSeconds 2`（边界修正前第二次独立复测） | 退出码 0，隔离配置创建与自动退出通过；目录 `.runtime/smoke-20261011-110841`，与前一行使用同一版本程序 |
+| `scripts/smoke-desktop.ps1`（最终边界修正后单独运行） | 退出码 0，stderr 为空，隔离配置 v1 与位置写入、自动退出均通过；目录 `.runtime/smoke-20261011-111522`，对应本节末最终 SHA-256 |
+| `git diff --check` | 通过 |
+
+新增 10 项单元测试覆盖朝向持续判定、中心防抖、拖动结束、光标失效与恢复、镜像方向、负坐标/DPI/缩放换算、资产无效几何、闭眼保持、遮罩范围、合成缓存及量化后的偏移上限。复核时发现四分之一源像素取整可能超出声明上限约 0.02 逻辑像素，已在量化时限制整数格数，并以所有睁眼表情的正负极值和越界输入验证修正。原生截图为自动注入展示状态；人工查看浅/深底色、大小、左右朝向与各睁眼表情样例，未见明显双重瞳孔、眼睑越界或文字反向。截图未采集桌面或其他窗口。
+
+### 启动复测与已知限制
+
+首次 `scripts/smoke-desktop.ps1` 与增量 Release 构建重叠，使用前一轮构建的程序，出现“退出超时”；脚本按原逻辑仅回收自己启动的进程，资料目录为 `.runtime/smoke-20261011-110452`。随后确认构建完成及进程退出，保持原有超时，两次独立复测均通过；量化边界修正后的最终程序又单独复测通过。首次超时根因未确认，不能仅凭复跑成功认定该问题已被修复，也未将其归因为已证实的构建争用。
+
+最终程序成功的 10 秒独立样本中，24 个逻辑处理器下程序占整机 CPU 约 0.456%，Working Set 304.6 MiB，Private Memory 393.1 MiB。这是短时启动样本，不代表长期内存、连续鼠标移动性能或性能提升。
+
+本轮尚未完成物理鼠标跨屏、实际 Windows 100%/150%/200% DPI、真实拖动/穿透/前台焦点组合及长时稳定性验收。坐标单元测试、模拟 UI 事件和自身渲染截图不能替代这些设备操作。暂停、勿扰与跟随的独立性已从生产调用路径确认；未将静态检查表述成物理操作验收。
+
+### 项目记忆与范围复核
+
+实施前读取 README（指定项目记忆）、角色资源说明和本验证记录，保留已有 `.gitignore`、README、资源说明及验证记录的未提交清理改动。README 同步跟随规则、模块职责、预览方式和验证边界；资源说明中残留的“常驻整机指标条”与当前 UI 不符，经 `ui/app.slint` 和点击面板实现核对后更正。没有新建独立项目记忆系统或修改全局记忆。
+
+原图集、`Cargo.toml`、`Cargo.lock` 的 SHA-256 与实施前基线一致。配置仍为 v1，未修改日常用户配置或历史交付包；测试与构建缓存按本轮验证需要重新生成。本轮没有 Git 提交、推送、安装、打包或发布。
+
+最终本地程序：`target/release/PetDesktop.exe`；SHA-256：`0872ea0af1a25eae2278d8c694d4fd3cba57a602e7d6aab55bb882000460108e`。
+
+## 本地目录清理：2026-10-11
+
+按用户确认的清单清理产物并保留最近版本，没有重排源码目录。删除前工作区干净，58 个 Git 跟踪文件完整，未发现运行中的桌宠、预览或 Rust 构建进程。逐项核对绝对路径与工作区边界，检查重解析点并比对快照；仅删除清单文件，随后删除空目录，没有使用整个项目的递归清理命令，也没有停止用户进程。
+
+共删除 18,346 个文件、3,592 个空目录，70 个删除目标均已不存在。删除文件的逻辑大小合计 14,925,130,215 字节，含编译产物硬链接的重复计数；删除前后观察到磁盘可用空间增加 13,380,468,736 字节，约 12.46 GiB。可用空间变化是本机采样值，可能受同盘其他活动影响。
+
+清理后的本地保留项：
+
+- `target/release/PetDesktop.exe`：当前源码构建，SHA-256 为 `261f4c29da79903e161e54667eba66373824a789aea8c20a086fc99c01a15ccf`；`target/` 中其他文件均已清理。
+- `artifacts/FireflyPet-v0.1.0-windows-x64-20261010-233331` 及同名 `.zip`、`.zip.sha256`：最近一套完整交付包，早于当前 exe，保持原样。
+- `.runtime/quota-ui-20261011-final`：当前版本完整界面验证截图。
+- `.runtime/quota-panel-baseline-20261011-092933`：最近一次功能修改前的源码基线。
+- `.runtime/smoke-20261011-095846`：最近一次启动验证资料。
+- `.runtime/position-check-20261010-233138` 与 `.runtime/verify-position.ps1`：已通过的位置验证资料和现有验证脚本。
+- `.runtime/git-source-baseline-20261011-100951.json`：首次入库前的文件哈希清单。
+
+本轮另在 `.runtime/cleanup-20261011-102807` 保存路径、大小、哈希清单及清理验证结果，不保存文件正文。旧桌面截图 `docs/native-preview.jpg` 已删除，Git 忽略规则继续保留；全部 Git 跟踪图片仍在。下方历史记录中的旧交付、旧基线、截图矩阵及示例 exe 路径均表示当时的取证位置；除上述保留项与 Git 跟踪文件外，相关本地产物已清理，历史测试结论本身不作改写。
+
+清理完成后、更新文档前，761 个保留文件的 SHA-256 全部与清理前一致，覆盖全部 58 个跟踪文件、当前程序、交付包和指定临时资料。交付包内 601 项文件与 `SHA256SUMS.txt` 一致，ZIP 与随附 `.sha256` 一致。以下格式检查通过：
+
+```powershell
+.\scripts\native-cargo.ps1 -CargoArguments @('fmt','--all','--','--check')
+rustfmt --edition 2024 --check tests/support/usage_fixture.rs
+```
+
+本轮只更新 README、角色资源说明、本验证记录和 `.gitignore` 中的截图注释；业务源码、资源、依赖清单和锁文件未改动。未重新构建、运行应用、查询真实账号或重跑单元测试，以免重建刚清理的产物；程序与交付包的保留完整性通过哈希验证。后续测试、构建和预览需要重新生成缓存与示例程序。未修改全局依赖缓存、真实用户配置、Git 历史，也未提交或推送。
+
 ## 源码入库前复核：2026-10-11
 
 按用户要求初始化本地 `main`，将 `origin` 配置为 `https://github.com/lkuliuying/agent-pet.git`；配置前通过 GitHub 仓库元数据和 `git ls-remote --symref` 确认远程为空、默认分支为 `main`。本地仅设置 `core.autocrlf=false` 保留源码换行，不修改全局 Git 配置，沿用已有提交身份。
 
-提交范围为原生程序与角色资源、测试与预览示例、Codex 本地插件模板与交付脚本、项目文档和模拟验证图片，共 58 个文件。`target/`、`artifacts/`、`.runtime/` 与插件目录的 exe 继续忽略；`docs/native-preview.jpg` 含后方窗口内容，增加精确忽略规则并保留本地原图。对提交候选的凭据模式扫描未发现匹配，4 个 JSON 文件解析和 4 个 PowerShell 脚本语法检查通过；这些检查不等同于完整安全审计。
+提交范围为原生程序与角色资源、测试与预览示例、Codex 本地插件模板与交付脚本、项目文档和模拟验证图片，共 58 个文件。`target/`、`artifacts/`、`.runtime/` 与插件目录的 exe 继续忽略；`docs/native-preview.jpg` 含后方窗口内容，入库时增加精确忽略规则并保留本地原图，随后已按本页首节清理。对提交候选的凭据模式扫描未发现匹配，4 个 JSON 文件解析和 4 个 PowerShell 脚本语法检查通过；这些检查不等同于完整安全审计。
 
 在正常 Windows 用户会话使用现有依赖缓存复核，未安装或升级依赖：
 
@@ -229,7 +591,7 @@
 - 点击角色切换开心；拖动触发惊讶，实际位置由 `[1853,816]` 移至 `[1725,770]` 并写入测试配置。
 - 右键打开设置，设置窗口获取焦点；关闭设置后桌宠继续运行。87 键设置保存并即时应用。
 - 本机读到 CPU 与内存；无电池或数据不可用显示为“无电池或不可用”。枚举到 Windows 中文音色 Microsoft Huihui Desktop。
-- 明确带模拟标记的 `PetDesktop.exe --codex-test` 经真实管道进入 UI，显示“联动演示”和“Codex 这一轮回复结束了。”，角色同步出现提醒表情。原始窗口截图 `native-preview.jpg` 背后可见其他窗口，属于透明背景证据；该截图仅在本地保留，不包含在源码仓库中。
+- 明确带模拟标记的 `PetDesktop.exe --codex-test` 经真实管道进入 UI，显示“联动演示”和“Codex 这一轮回复结束了。”，角色同步出现提醒表情。原始窗口截图 `native-preview.jpg` 背后可见其他窗口，属于当时的透明背景证据；该截图未纳入源码仓库，已在 2026-10-11 清理。
 - `SLINT_SCALE_FACTOR=1 / 1.5 / 2` 的三个进程级渲染缩放均观察到完整角色和键盘；这是渲染缩放模拟，没有修改 Windows 系统 DPI，不能替代真实系统缩放与多屏验证。
 
 界面验证过程中，用户按物理 Esc 停止了 Computer Use。此后停止桌面控制；未完成的界面项目保留在下方验收清单。

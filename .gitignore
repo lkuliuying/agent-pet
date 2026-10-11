@@ -3,5 +3,5 @@
 /artifacts/
 /.runtime/
 
-# 旧桌面截图包含后方窗口内容，仅在本地保留。
+# 含桌面背景内容的历史截图不纳入版本控制。
 /docs/native-preview.jpg
