@@ -69,14 +69,9 @@ fn send_to(name: &[u16], event: &CodexEvent) -> Result<(), String> {
 }
 fn send_bytes_to(name: &[u16], bytes: &[u8]) -> Result<(), String> {
     unsafe {
-        if !WaitNamedPipeW(PCWSTR(name.as_ptr()), 150).as_bool() {
-            return Err(format!(
-                "桌宠未运行或通道忙：{}",
-                windows::core::Error::from_thread()
-            ));
-        }
-        let handle = OwnedHandle(
-            CreateFileW(
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let handle = loop {
+            match CreateFileW(
                 PCWSTR(name.as_ptr()),
                 GENERIC_WRITE.0,
                 FILE_SHARE_MODE(0),
@@ -84,9 +79,27 @@ fn send_bytes_to(name: &[u16], bytes: &[u8]) -> Result<(), String> {
                 OPEN_EXISTING,
                 FILE_FLAG_OVERLAPPED,
                 None,
-            )
-            .map_err(|e| format!("无法连接桌宠：{e}"))?,
-        );
+            ) {
+                Ok(handle) => break OwnedHandle(handle),
+                Err(error) => {
+                    let retryable = [ERROR_PIPE_BUSY, ERROR_FILE_NOT_FOUND]
+                        .iter()
+                        .any(|code| error.code() == windows::core::HRESULT::from_win32(code.0));
+                    if !retryable || Instant::now() >= deadline {
+                        return Err(format!("无法连接桌宠：{error}"));
+                    }
+                    // 等待就绪不能预留实例；并发客户端抢先连接后仍需在同一期限内重试。
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    let wait_ms = remaining.as_millis().clamp(1, 25) as u32;
+                    if !WaitNamedPipeW(PCWSTR(name.as_ptr()), wait_ms).as_bool() {
+                        std::thread::sleep(
+                            Duration::from_millis(5)
+                                .min(deadline.saturating_duration_since(Instant::now())),
+                        );
+                    }
+                }
+            }
+        };
         let signal = OwnedHandle(
             CreateEventW(None, true, false, None).map_err(|_| "无法建立发送事件".to_string())?,
         );
@@ -260,6 +273,44 @@ mod tests {
         let worker_name = name.clone();
         let worker = std::thread::spawn(move || listen_on(&worker_name, worker_stop, tx));
         let result = std::panic::catch_unwind(|| {
+            let busy_event = CodexEvent {
+                version: 1,
+                kind: crate::bridge::CodexKind::PermissionRequest,
+                session_id: "test-session".into(),
+                turn_id: "busy-turn".into(),
+                simulated: true,
+                ..Default::default()
+            };
+            let ready = Instant::now() + Duration::from_secs(2);
+            while unsafe { !WaitNamedPipeW(PCWSTR(name.as_ptr()), 25).as_bool() } {
+                assert!(Instant::now() < ready, "测试管道未准备好");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let idle = unsafe {
+                OwnedHandle(
+                    CreateFileW(
+                        PCWSTR(name.as_ptr()),
+                        GENERIC_WRITE.0,
+                        FILE_SHARE_MODE(0),
+                        None,
+                        OPEN_EXISTING,
+                        FILE_FLAG_OVERLAPPED,
+                        None,
+                    )
+                    .unwrap(),
+                )
+            };
+            let send_name = name.clone();
+            let send_event = busy_event.clone();
+            let sender = std::thread::spawn(move || send_to(&send_name, &send_event));
+            std::thread::sleep(Duration::from_millis(220));
+            drop(idle);
+            let sent = sender.join().unwrap();
+            sent.expect("短暂占用结束后应能在期限内发送");
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(2)).unwrap().turn_id,
+                busy_event.turn_id
+            );
             for index in 0..3 {
                 let event = CodexEvent {
                     version: 1,
@@ -267,6 +318,7 @@ mod tests {
                     session_id: "test-session".into(),
                     turn_id: format!("turn-{index}"),
                     simulated: true,
+                    ..Default::default()
                 };
                 let deadline = Instant::now() + Duration::from_secs(2);
                 loop {
@@ -303,6 +355,33 @@ mod tests {
                     }
                 }
             }
+            let barrier = Arc::new(std::sync::Barrier::new(8));
+            let senders: Vec<_> = (0..8)
+                .map(|index| {
+                    let name = name.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        let event = CodexEvent {
+                            version: 1,
+                            kind: crate::bridge::CodexKind::Interrupt,
+                            session_id: "test-session".into(),
+                            turn_id: format!("concurrent-{index}"),
+                            simulated: true,
+                            ..Default::default()
+                        };
+                        barrier.wait();
+                        send_to(&name, &event)
+                    })
+                })
+                .collect();
+            let results: Vec<_> = senders.into_iter().map(|s| s.join().unwrap()).collect();
+            for sent in results {
+                sent.expect("并发 hook 连接不应因另一个客户端抢先连接而丢失");
+            }
+            let received: std::collections::HashSet<_> = (0..8)
+                .map(|_| rx.recv_timeout(Duration::from_secs(2)).unwrap().turn_id)
+                .collect();
+            assert_eq!(received.len(), 8);
         });
         stop.store(true, Ordering::Relaxed);
         worker.join().unwrap().unwrap();
@@ -314,7 +393,8 @@ mod tests {
                     kind: crate::bridge::CodexKind::Stop,
                     session_id: "test".into(),
                     turn_id: "gone".into(),
-                    simulated: true
+                    simulated: true,
+                    ..Default::default()
                 }
             )
             .is_err()

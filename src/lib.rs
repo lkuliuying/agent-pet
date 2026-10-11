@@ -8,5 +8,8 @@ pub mod keyboard;
 pub mod notices;
 #[cfg(windows)]
 pub mod platform;
+pub mod resource_alerts;
+pub mod sessions;
 pub mod ui_state;
 pub mod usage;
+pub mod voice;

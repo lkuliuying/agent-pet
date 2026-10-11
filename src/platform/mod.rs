@@ -1,7 +1,13 @@
+mod codex_presence;
+pub mod codex_sessions;
 pub mod codex_usage;
 pub mod desktop;
+pub mod gpu;
 pub mod input;
+pub mod integration;
 pub mod ipc;
+mod quota_service;
+mod session_changes;
 pub mod system;
 pub mod voice;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};

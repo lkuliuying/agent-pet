@@ -1,10 +1,16 @@
-import { ComboBox, Slider, ScrollView, AboutSlint } from "std-widgets.slint";
+import { Slider, ScrollView, AboutSlint } from "std-widgets.slint";
 import { PetTheme, Icon, ActionButton, SettingToggle, Divider, MenuRow } from "controls.slint";
+import { SpriteSpec } from "character.slint";
+import { ExpressionValues, ExpressionSettings } from "expression-settings.slint";
+import { AlertValues, ResourceValues, ResourceAlertEditor } from "resource-alert.slint";
+import { SessionRow, SessionList } from "session-list.slint";
 
 export struct SettingsValues {
     scale-percent: float, paused: bool, passthrough: bool, quiet: bool, quiet-fullscreen: bool,
-    voice: bool, volume: int, voice-index: int, battery: bool, power: bool,
+    voice: bool, volume: int, battery: bool, power: bool,
     network: bool, cpu: bool, memory: bool, codex: bool,
+    expressions: ExpressionValues,
+    resources: ResourceValues,
 }
 
 export component SettingsWindow inherits Window {
@@ -17,21 +23,40 @@ export component SettingsWindow inherits Window {
     in-out property <SettingsValues> draft;
     in property <SettingsValues> applied;
     out property <bool> dirty: root.draft != root.applied;
-    out property <bool> save-visible: root.page != 4 || root.dirty;
+    out property <bool> save-visible: root.page != 5 || root.dirty;
     in-out property <int> page;
-    in property <[string]> voices;
+    changed page => { content.content-y = 0px; }
+    in property <ExpressionValues> expression-defaults;
+    in-out property <int> preview-index;
+    in property <SpriteSpec> preview-body;
+    in property <SpriteSpec> preview-left-hand;
+    in property <SpriteSpec> preview-right-hand;
+    in property <SpriteSpec> preview-keyboard;
+    in property <[SpriteSpec]> preview-faces;
+    in property <[image]> preview-images;
     in property <string> status;
     in property <bool> status-error;
     in property <string> battery-status: "电量：正在读取…";
     in property <string> codex-status: "尚未收到 hooks 状态事件。";
-    in property <string> quota-status: "点击角色或“刷新额度”读取账号额度。";
+    in property <string> quota-status: "正在后台同步额度…";
+    in property <[SessionRow]> sessions;
+    in property <string> session-status: "正在读取本机会话…";
+    in property <string> integration-status: "正在检测 Codex 联动…";
+    in property <bool> integration-busy;
     in property <bool> quota-busy;
-    in property <string> voice-status: "正在读取系统音色…";
+    in property <string> voice-status: "内置流萤音色，可离线播放。";
     callback apply();
     callback preview-voice();
     callback test-codex();
     callback refresh-quota();
+    callback install-integration();
+    callback check-integration();
     callback reset-position();
+    callback reset-expressions();
+    reset-expressions => {
+        root.draft.expressions = root.expression-defaults;
+        root.preview-index = 0;
+    }
 
     HorizontalLayout {
         spacing: 0;
@@ -39,7 +64,7 @@ export component SettingsWindow inherits Window {
             width: 180px; background: #f0f5f1;
             Rectangle { x: parent.width - 1px; width: 1px; background: PetTheme.line; }
             VerticalLayout {
-                padding-top: 28px; padding-bottom: 22px; spacing: 5px;
+                padding-top: 20px; padding-bottom: 18px; spacing: 5px;
                 VerticalLayout {
                     height: 72px;
                     padding-left: 18px; padding-right: 10px; spacing: 7px;
@@ -49,12 +74,13 @@ export component SettingsWindow inherits Window {
                 }
                 for item[index] in [
                     {title: "桌面与键盘", glyph: "\u{e765}"},
+                    {title: "角色表情", glyph: "\u{e76e}"},
                     {title: "消息提醒", glyph: "\u{ea8f}"},
                     {title: "语音播报", glyph: "\u{e767}"},
                     {title: "Codex 联动", glyph: "\u{e71b}"},
                     {title: "关于", glyph: "\u{e946}"},
                 ]: Rectangle {
-                    height: 48px;
+                    height: 44px;
                     MenuRow {
                         x: 5px; y: 2px; width: parent.width - 10px;
                         text: item.title; glyph: item.glyph; active: root.page == index;
@@ -68,16 +94,16 @@ export component SettingsWindow inherits Window {
         }
         VerticalLayout {
             spacing: 0;
-            ScrollView {
+            content := ScrollView {
                 content-width: self.width;
                 VerticalLayout {
                     padding: 30px; spacing: 9px;
                     Text {
-                        text: ["桌面与键盘", "消息提醒", "语音播报", "Codex 联动", "关于"][root.page];
+                        text: ["桌面与键盘", "角色表情", "消息提醒", "语音播报", "Codex 联动", "关于"][root.page];
                         font-size: 26px; font-weight: 700; color: PetTheme.ink;
                     }
-                    if root.page != 4: Text {
-                        text: ["调整角色大小、输入同步与桌面交互。", "决定何时提醒，以及接收哪些系统消息。", "使用 Windows 已安装的系统音色。", "按需查看账号额度，接收任务状态提醒。"][root.page];
+                    if root.page != 5: Text {
+                        text: ["调整角色大小、输入同步与桌面交互。", "为不同场景选择表情，调整出现的时间。", "决定何时提醒，以及接收哪些系统消息。", "使用内置流萤语音，离线播放固定提醒。", "后台同步账号额度，查看会话与接收提醒。"][root.page];
                         color: PetTheme.muted; font-size: 13px; wrap: word-wrap;
                     }
                     Rectangle { height: 14px; }
@@ -126,7 +152,16 @@ export component SettingsWindow inherits Window {
                         }
                     }
 
-                    if root.page == 1: VerticalLayout {
+                    if root.page == 1: ExpressionSettings {
+                        draft <=> root.draft.expressions;
+                        preview-index <=> root.preview-index;
+                        body: root.preview-body; left-hand: root.preview-left-hand;
+                        right-hand: root.preview-right-hand; keyboard: root.preview-keyboard;
+                        faces: root.preview-faces; images: root.preview-images;
+                        restore-defaults => { root.reset-expressions(); }
+                    }
+
+                    if root.page == 2: VerticalLayout {
                         spacing: 2px;
                         SettingToggle { text: "勿扰模式"; description: "暂停所有主动播报"; checked <=> root.draft.quiet; }
                         SettingToggle { text: "全屏或演示时自动勿扰"; checked <=> root.draft.quiet-fullscreen; }
@@ -135,20 +170,21 @@ export component SettingsWindow inherits Window {
                         SettingToggle { text: "低电量"; checked <=> root.draft.battery; }
                         SettingToggle { text: "电源变化"; checked <=> root.draft.power; }
                         SettingToggle { text: "网络变化"; checked <=> root.draft.network; }
-                        SettingToggle { text: "CPU 持续高占用"; checked <=> root.draft.cpu; }
-                        SettingToggle { text: "内存持续高占用"; checked <=> root.draft.memory; }
-                        Text { text: "CPU / 内存超过 90% 持续 30 秒时提醒。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        ResourceAlertEditor { title: "CPU"; active <=> root.draft.cpu; rule <=> root.draft.resources.cpu-rule; }
+                        ResourceAlertEditor { title: "内存"; active <=> root.draft.memory; rule <=> root.draft.resources.memory-rule; }
+                        ResourceAlertEditor { title: "GPU"; active <=> root.draft.resources.gpu; rule <=> root.draft.resources.gpu-rule; }
+                        Text { text: "每 5 秒采样；达到阈值并持续指定时间后提醒。GPU 显示最忙引擎占用，未知读数不会触发。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
                         Text { text: root.battery-status; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
                     }
 
-                    if root.page == 2: VerticalLayout {
+                    if root.page == 3: VerticalLayout {
                         spacing: 20px;
-                        SettingToggle { text: "启用系统语音"; checked <=> root.draft.voice; }
+                        SettingToggle { text: "启用流萤语音"; checked <=> root.draft.voice; }
                         Divider {}
                         HorizontalLayout {
                             spacing: 30px;
-                            Text { text: "系统音色"; color: PetTheme.ink; vertical-alignment: center; }
-                            ComboBox { model: root.voices; current-index <=> root.draft.voice-index; enabled: root.voices.length > 0; }
+                            Text { text: "音色"; color: PetTheme.ink; vertical-alignment: center; }
+                            Text { text: "流萤"; color: PetTheme.ink; vertical-alignment: center; }
                         }
                         HorizontalLayout {
                             spacing: 20px;
@@ -158,29 +194,38 @@ export component SettingsWindow inherits Window {
                         }
                         HorizontalLayout {
                             spacing: 16px;
-                            ActionButton { text: "试听"; enabled: root.voices.length > 0; clicked => { root.preview-voice(); } }
+                            ActionButton { text: "试听"; clicked => { root.preview-voice(); } }
                             Text { text: root.voice-status; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
                         }
-                        Text { text: "语音关闭时，文字提醒仍然显示。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
-                    }
-
-                    if root.page == 3: VerticalLayout {
-                        spacing: 18px;
-                        Text { text: "账号额度"; color: PetTheme.ink; font-size: 16px; font-weight: 600; }
-                        Text { text: root.quota-status; color: PetTheme.ink; font-size: 13px; wrap: word-wrap; }
-                        Text { text: "左键点击角色查看整机 CPU、内存、剩余额度及重置时间。额度查询独立于下面的事件提醒开关。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
-                        HorizontalLayout { ActionButton { text: root.quota-busy ? "正在查询…" : "刷新额度"; enabled: !root.quota-busy; clicked => { root.refresh-quota(); } } Rectangle { horizontal-stretch: 1; } }
-                        Divider {}
-                        SettingToggle { text: "接收 Codex 事件"; description: "轮次结束、审批请求和中断"; checked <=> root.draft.codex; }
-                        Divider {}
-                        Text { text: root.codex-status; color: PetTheme.ink; font-size: 14px; wrap: word-wrap; }
-                        Text { text: "按使用说明安装本地插件，并信任 hooks。"; color: PetTheme.muted; font-size: 13px; wrap: word-wrap; }
-                        HorizontalLayout { ActionButton { text: "演示一条提醒"; clicked => { root.test-codex(); } } Rectangle { horizontal-stretch: 1; } }
-                        Text { text: "仅用于演示，不代表接入成功。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
-                        Text { text: "只接收状态标识，不保存提示词或回复。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "试听使用当前音量；点击“保存并应用”后用于提醒。勿扰期间不播放语音。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
                     }
 
                     if root.page == 4: VerticalLayout {
+                        spacing: 18px;
+                        Text { text: "账号额度"; color: PetTheme.ink; font-size: 16px; font-weight: 600; }
+                        Text { text: root.quota-status; color: PetTheme.ink; font-size: 13px; wrap: word-wrap; }
+                        Text { text: "每 15 秒后台同步额度，关闭面板仍更新。左键点击角色查看 CPU、内存、GPU 和 Codex 会话。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        HorizontalLayout { ActionButton { text: root.quota-busy ? "正在查询…" : "刷新额度"; enabled: !root.quota-busy; clicked => { root.refresh-quota(); } } Rectangle { horizontal-stretch: 1; } }
+                        Divider {}
+                        SettingToggle { text: "Codex 会话提醒"; description: "询问、权限请求、轮次结束和中断"; checked <=> root.draft.codex; }
+                        Divider {}
+                        Text { text: root.codex-status; color: PetTheme.ink; font-size: 14px; wrap: word-wrap; }
+                        Text { text: root.integration-status; color: PetTheme.ink; font-size: 13px; wrap: word-wrap; }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            ActionButton { text: "安装／更新联动"; enabled: !root.integration-busy; clicked => { root.install-integration(); } }
+                            ActionButton { text: "重新检测"; enabled: !root.integration-busy; clicked => { root.check-integration(); } }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        Text { text: "安装后，请在 Codex 中审阅并信任流萤插件的 hooks；再启动或恢复会话。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        HorizontalLayout { ActionButton { text: "演示一条提醒"; clicked => { root.test-codex(); } } Rectangle { horizontal-stretch: 1; } }
+                        Text { text: "仅用于演示，不代表接入成功。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        Text { text: "只读取本机 Desktop 主会话的名称、项目和状态标识，不保存或上传对话正文与凭据。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+                        Divider {}
+                        SessionList { rows: root.sessions; status: root.session-status; }
+                    }
+
+                    if root.page == 5: VerticalLayout {
                         spacing: 20px;
                         Text { text: "流萤桌宠    v0.1.0"; color: PetTheme.ink; font-size: 20px; font-weight: 600; }
                         Text { text: "Windows 原生免安装桌面伙伴"; color: PetTheme.muted; font-size: 13px; }
@@ -204,7 +249,7 @@ export component SettingsWindow inherits Window {
                 footer := HorizontalLayout {
                     padding-left: 30px; padding-right: 30px; padding-top: 14px; padding-bottom: 14px; spacing: 20px;
                     Text {
-                        text: root.status-error ? root.status : (root.dirty ? "有未保存的修改" : (root.page == 4 ? "当前页面没有可修改的设置" : (root.status != "" ? root.status : "更改后需要保存并应用")));
+                        text: root.status-error ? root.status : (root.dirty ? "有未保存的修改" : (root.page == 5 ? "当前页面没有可修改的设置" : (root.status != "" ? root.status : "更改后需要保存并应用")));
                         color: root.status-error ? #a63333 : PetTheme.muted;
                         font-size: 12px; wrap: word-wrap; vertical-alignment: center;
                     }

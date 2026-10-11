@@ -1,7 +1,7 @@
-use super::{PetWindow, QuotaRow, SettingsWindow, StatusPanelWindow};
+use super::{PetWindow, QuotaRow, SessionRow, SettingsWindow, StatusPanelWindow};
 use pet_desktop::{
     platform::{
-        codex_usage::{self, QueryResult},
+        codex_usage::{self, UsageUpdate},
         desktop,
     },
     ui_state::{self, PanelDismissal},
@@ -17,11 +17,7 @@ use slint::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-        mpsc::{Receiver, SyncSender, TrySendError},
-    },
+    sync::mpsc::{Receiver, SyncSender, TrySendError},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use windows::Win32::Foundation::HWND;
@@ -32,17 +28,15 @@ pub struct UsagePanel {
     state: RefCell<UsageState>,
     dismissal: RefCell<PanelDismissal>,
     native_configured: Cell<bool>,
-    generation: Arc<AtomicU64>,
     requests: SyncSender<()>,
-    results: Receiver<QueryResult>,
+    results: Receiver<UsageUpdate>,
 }
 
 impl UsagePanel {
     pub fn new(
         settings: &SettingsWindow,
-        generation: Arc<AtomicU64>,
         requests: SyncSender<()>,
-        results: Receiver<QueryResult>,
+        results: Receiver<UsageUpdate>,
     ) -> Result<Rc<Self>, slint::PlatformError> {
         let this = Rc::new(Self {
             window: StatusPanelWindow::new()?,
@@ -50,7 +44,6 @@ impl UsagePanel {
             state: RefCell::new(UsageState::default()),
             dismissal: RefCell::new(PanelDismissal::default()),
             native_configured: Cell::new(false),
-            generation,
             requests,
             results,
         });
@@ -79,13 +72,11 @@ impl UsagePanel {
         let Some(id) = self.state.borrow_mut().request(Instant::now()) else {
             return;
         };
-        self.generation.store(id, Ordering::Release);
-        // 通道只承载唤醒信号，最新代次保存在原子变量中；满队列直接合并。
+        // 刷新由常驻服务串行处理，满队列表示已有刷新请求，无需重复发送。
         if let Err(TrySendError::Disconnected(())) = self.requests.try_send(()) {
             self.state
                 .borrow_mut()
                 .complete(id, Err(UsageError::Process), SystemTime::now());
-            self.generation.store(0, Ordering::Release);
         }
         self.publish();
     }
@@ -96,6 +87,7 @@ impl UsagePanel {
             return;
         }
         *self.dismissal.borrow_mut() = PanelDismissal::opened(desktop::escape_pressed());
+        self.window.set_details_open(false);
         self.place(pet);
         if self.window.show().is_err() {
             if let Some(settings) = self.settings.upgrade() {
@@ -104,17 +96,16 @@ impl UsagePanel {
             return;
         }
         self.configure_native();
-        self.refresh();
+        self.publish();
     }
 
     pub fn close(&self) {
-        if !self.is_visible() && self.state.borrow().in_flight.is_none() {
+        if !self.is_visible() {
             return;
         }
         let _ = self.window.hide();
+        self.window.set_details_open(false);
         self.native_configured.set(false);
-        self.generation.store(0, Ordering::Release);
-        self.state.borrow_mut().cancel();
         self.publish();
     }
 
@@ -122,10 +113,34 @@ impl UsagePanel {
         self.window.window().is_visible()
     }
 
-    pub fn metrics(&self, cpu: Option<f64>, memory: Option<f64>) {
+    pub fn metrics(&self, cpu: Option<f64>, memory: Option<f64>, gpu: Option<f64>) {
         self.window.set_cpu_text(ui_state::metric_text(cpu).into());
         self.window
             .set_memory_text(ui_state::metric_text(memory).into());
+        self.window.set_gpu_text(ui_state::metric_text(gpu).into());
+    }
+
+    pub fn sessions(&self, rows: Vec<pet_desktop::sessions::SessionView>, status: String) {
+        let rows: Vec<_> = rows
+            .into_iter()
+            .map(|row| SessionRow {
+                title: row.title.into(),
+                project: row.project.into(),
+                status: row.status.label().into(),
+                attention: matches!(
+                    row.status,
+                    pet_desktop::sessions::SessionStatus::Waiting
+                        | pet_desktop::sessions::SessionStatus::Approval
+                ),
+            })
+            .collect();
+        let model: slint::ModelRc<SessionRow> = Rc::new(VecModel::from(rows)).into();
+        self.window.set_sessions(model.clone());
+        self.window.set_session_status(status.clone().into());
+        if let Some(settings) = self.settings.upgrade() {
+            settings.set_sessions(model);
+            settings.set_session_status(status.into());
+        }
     }
 
     fn configure_native(&self) {
@@ -156,12 +171,12 @@ impl UsagePanel {
         let width = if panel_size.width > 0 {
             panel_size.width
         } else {
-            (320. * dpi) as u32
+            (352. * dpi) as u32
         };
         let height = if panel_size.height > 0 {
             panel_size.height
         } else {
-            (240. * dpi) as u32
+            (32. * dpi) as u32
         };
         let (x, y) = desktop::panel_position(
             (
@@ -183,14 +198,16 @@ impl UsagePanel {
     pub fn tick(&self, pet: &PetWindow) {
         let mut changed = false;
         while let Ok(event) = self.results.try_recv() {
-            if self
-                .state
-                .borrow_mut()
-                .complete(event.id, event.result, SystemTime::now())
-            {
-                self.generation.store(0, Ordering::Release);
-                changed = true;
+            match event {
+                UsageUpdate::Refreshing => {
+                    self.state.borrow_mut().request(Instant::now());
+                }
+                UsageUpdate::Reset => self.state.borrow_mut().reset_account(),
+                UsageUpdate::Complete(result) => {
+                    self.state.borrow_mut().update(result, SystemTime::now())
+                }
             }
+            changed = true;
         }
         if changed {
             self.publish();
@@ -217,12 +234,7 @@ impl UsagePanel {
             );
             if dismiss {
                 self.close();
-                return;
             }
-        }
-        let refresh = self.state.borrow().refresh_due(visible, Instant::now());
-        if refresh {
-            self.refresh();
         }
     }
 
@@ -253,7 +265,13 @@ impl UsagePanel {
             .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
             .and_then(|duration| i64::try_from(duration.as_secs()).ok())
             .and_then(codex_usage::local_time)
-            .map(|time| format!("更新于 {time}（本地时间）"))
+            .map(|time| {
+                if state.error.is_some() {
+                    format!("数据已过期 · 上次成功 {time}（本地时间）")
+                } else {
+                    format!("更新于 {time}（本地时间）")
+                }
+            })
             .unwrap_or_default();
         if let Some(settings) = self.settings.upgrade() {
             let detail = rows
@@ -272,5 +290,6 @@ impl UsagePanel {
         self.window.set_status(state.status().into());
         self.window.set_updated(updated.into());
         self.window.set_busy(state.in_flight.is_some());
+        self.window.set_quota_text(state.compact_text().into());
     }
 }

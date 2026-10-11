@@ -1,0 +1,23 @@
+import { PetTheme } from "controls.slint";
+
+export struct SessionRow { title: string, project: string, status: string, attention: bool }
+
+export component SessionList inherits VerticalLayout {
+    in property <[SessionRow]> rows;
+    in property <string> status;
+    spacing: 6px;
+    Text { text: "当前 Codex 会话 · " + root.rows.length; color: PetTheme.ink; font-size: 13px; font-weight: 600; }
+    Text { text: root.status; color: PetTheme.muted; font-size: 11px; wrap: word-wrap; }
+    if root.rows.length == 0: Text { text: "暂无可确认的运行中会话"; color: PetTheme.muted; font-size: 12px; }
+    for row in root.rows: Rectangle {
+        min-height: 76px; max-height: 76px;
+        background: row.attention ? #fff5df : white;
+        border-radius: 6px;
+        VerticalLayout {
+            padding: 7px; spacing: 3px;
+            Text { text: row.title; color: PetTheme.ink; font-size: 12px; overflow: elide; }
+            Text { text: row.status; color: row.attention ? #865b12 : PetTheme.green; font-size: 12px; font-weight: 600; }
+            Text { text: row.project; color: PetTheme.muted; font-size: 11px; overflow: elide; }
+        }
+    }
+}

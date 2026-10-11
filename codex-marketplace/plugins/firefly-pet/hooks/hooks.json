@@ -1,26 +1,109 @@
 {
-  "description": "Windows 本地状态播报；只发送事件类型及会话、轮次标识，不返回审批决定。",
+  "description": "Windows 本机状态联动；仅发送会话、轮次和工具标识，不参与审批。",
   "hooks": {
-    "Stop": [{ "hooks": [{
-      "type": "command",
-      "command": "echo {}",
-      "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
-      "async": true,
-      "timeout": 2
-    }] }],
-    "PermissionRequest": [{ "hooks": [{
-      "type": "command",
-      "command": "echo {}",
-      "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
-      "async": true,
-      "timeout": 2
-    }] }],
-    "Interrupt": [{ "hooks": [{
-      "type": "command",
-      "command": "echo {}",
-      "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
-      "async": true,
-      "timeout": 2
-    }] }]
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo {}",
+            "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
+            "async": true,
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo {}",
+            "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
+            "async": true,
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo {}",
+            "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
+            "async": true,
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo {}",
+            "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
+            "async": true,
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo {}",
+            "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
+            "async": true,
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo {}",
+            "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
+            "async": true,
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo {}",
+            "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
+            "async": true,
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo {}",
+            "commandWindows": "cmd.exe /d /c \"${PLUGIN_ROOT}\\hooks\\notify.cmd\"",
+            "async": true,
+            "timeout": 2
+          }
+        ]
+      }
+    ]
   }
 }

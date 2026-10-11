@@ -22,6 +22,7 @@ fn main() {
                 session_id: "simulation".into(),
                 turn_id: format!("test-{}", std::process::id()),
                 simulated: true,
+                ..Default::default()
             };
             match pet_desktop::platform::ipc::send(&event) {
                 Ok(()) => println!("模拟事件已发送，不代表真实 Codex 接入。"),

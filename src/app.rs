@@ -2,13 +2,14 @@ use pet_desktop::{
     assets::{self, Sprite},
     bridge::{CodexEvent, CodexKind},
     config::{self, Config},
+    expressions::{ExpressionContext, ExpressionState},
+    gaze::{self, Geometry, Pose, Tracker},
+    gaze_render::GazeRenderer,
     keyboard::KeyboardState,
     notices::{Announcer, Notice, SystemRules},
-    platform::{
-        self,
-        voice::{VoiceCommand, VoiceEvent},
-    },
+    platform::{self, voice::VoiceEvent},
     ui_state::{self, QuickAction},
+    voice::{self, VoiceCue},
 };
 use slint::winit_030::{
     WinitWindowAccessor,
@@ -17,7 +18,7 @@ use slint::winit_030::{
         raw_window_handle::{HasWindowHandle, RawWindowHandle},
     },
 };
-use slint::{ComponentHandle, PhysicalPosition, PhysicalSize, Timer, TimerMode, VecModel};
+use slint::{ComponentHandle, PhysicalPosition, PhysicalSize, Timer, TimerMode};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -31,6 +32,8 @@ use std::{
 };
 use windows::Win32::Foundation::HWND;
 slint::include_modules!();
+mod expression_settings;
+mod resource_settings;
 mod usage_panel;
 use usage_panel::UsagePanel;
 
@@ -65,9 +68,7 @@ struct State {
     announcer: Announcer,
     rules: SystemRules,
     bubble_until: Option<Instant>,
-    happy_until: Option<Instant>,
-    surprised_until: Option<Instant>,
-    voices: Vec<(String, String)>,
+    expressions: ExpressionState,
     position_dirty: Option<Instant>,
     last_position: Option<(i32, i32)>,
 }
@@ -83,7 +84,7 @@ fn sprite(s: Sprite) -> SpriteSpec {
         h: s.height,
     }
 }
-fn values(c: &Config, voices: &[(String, String)]) -> SettingsValues {
+fn values(c: &Config) -> SettingsValues {
     SettingsValues {
         scale_percent: c.scale * 100.,
         paused: c.paused,
@@ -98,18 +99,11 @@ fn values(c: &Config, voices: &[(String, String)]) -> SettingsValues {
         cpu: c.cpu,
         memory: c.memory,
         codex: c.codex,
-        voice_index: voices
-            .iter()
-            .position(|(id, _)| id == &c.voice_id)
-            .map(|index| index as i32)
-            .unwrap_or(if c.voice_id.is_empty() && !voices.is_empty() {
-                0
-            } else {
-                -1
-            }),
+        expressions: expression_settings::values(&c.expressions),
+        resources: resource_settings::values(&c.resource_alerts),
     }
 }
-fn draft_config(draft: SettingsValues, current: &Config, voices: &[(String, String)]) -> Config {
+fn base_draft_config(draft: SettingsValues, current: &Config) -> Config {
     let mut c = current.clone();
     c.scale = draft.scale_percent / 100.;
     c.paused = draft.paused;
@@ -118,11 +112,6 @@ fn draft_config(draft: SettingsValues, current: &Config, voices: &[(String, Stri
     c.quiet_fullscreen = draft.quiet_fullscreen;
     c.voice = draft.voice;
     c.volume = draft.volume.clamp(0, 100) as u16;
-    if draft.voice_index >= 0
-        && let Some(voice) = voices.get(draft.voice_index as usize)
-    {
-        c.voice_id.clone_from(&voice.0);
-    }
     c.battery = draft.battery;
     c.power = draft.power;
     c.network = draft.network;
@@ -131,10 +120,20 @@ fn draft_config(draft: SettingsValues, current: &Config, voices: &[(String, Stri
     c.codex = draft.codex;
     c
 }
-fn populate(settings: &SettingsWindow, c: &Config, voices: &[(String, String)]) {
-    let v = values(c, voices);
+fn draft_config(draft: SettingsValues, current: &Config) -> Result<Config, String> {
+    let expressions = expression_settings::config(draft.expressions.clone())?;
+    let resources = resource_settings::config(draft.resources.clone())?;
+    let mut c = base_draft_config(draft, current);
+    c.expressions = expressions;
+    c.resource_alerts = resources;
+    c.validate()?;
+    Ok(c)
+}
+fn populate(settings: &SettingsWindow, c: &Config) {
+    let v = values(c);
     settings.set_draft(v.clone());
     settings.set_applied(v);
+    settings.set_preview_index(c.expressions.idle.index() as i32);
 }
 fn apply_visual(pet: &PetWindow, tray: &PetTray, menu: &QuickMenuWindow, c: &Config) {
     pet.set_factor(c.scale);
@@ -184,7 +183,7 @@ fn reset_position(pet: &PetWindow) -> (i32, i32) {
 }
 fn display(settings: &SettingsWindow, state: &State) {
     if !settings.window().is_visible() {
-        populate(settings, &state.config, &state.voices);
+        populate(settings, &state.config);
         settings.set_page(0);
     }
     match settings.show() {
@@ -239,6 +238,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     pet.set_left_hand(sprite(character.left_hand));
     pet.set_right_hand(sprite(character.right_hand));
     pet.set_face(sprite(character.faces[0]));
+    let mut gaze_renderer =
+        GazeRenderer::new(&character, pet.get_character_atlas(), pet.get_gaze_atlas())?;
+    pet.set_face_image(gaze_renderer.render(0, Pose::default())?);
+    expression_settings::bind_preview(&settings, &character, &mut gaze_renderer)?;
     pet.set_keyboard(sprite(character.keyboard));
     pet.set_label_y(character.anchors.label_y);
     pet.set_left_tap_dy(character.anchors.left_tap_dy);
@@ -254,32 +257,62 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         announcer: Announcer::default(),
         rules: SystemRules::default(),
         bubble_until: None,
-        happy_until: None,
-        surprised_until: None,
-        voices: Vec::new(),
+        expressions: ExpressionState::default(),
         position_dirty: None,
         last_position: None,
     }));
     let mut workers = Workers::new();
-    let usage_generation = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (usage_tx, usage_rx) = mpsc::sync_channel(1);
     let (usage_result_tx, usage_result_rx) = mpsc::sync_channel(2);
-    let usage_panel = UsagePanel::new(
-        &settings,
-        usage_generation.clone(),
-        usage_tx,
-        usage_result_rx,
-    )?;
+    let usage_panel = UsagePanel::new(&settings, usage_tx, usage_result_rx)?;
     {
         let stop = workers.stop.clone();
         workers.spawn("pet-quota", move || {
-            platform::codex_usage::run(stop, usage_generation, usage_rx, usage_result_tx)
+            platform::codex_usage::run(stop, usage_rx, usage_result_tx)
         })?;
     }
     let (errors_tx, errors_rx) = mpsc::sync_channel::<String>(16);
     let (system_tx, system_rx) = mpsc::sync_channel(2);
     let (codex_tx, codex_rx) = mpsc::sync_channel(32);
-    let (voice_tx, voice_rx) = mpsc::sync_channel(8);
+    let (session_tx, session_rx) = mpsc::sync_channel(4);
+    let (integration_tx, integration_rx) = mpsc::sync_channel(1);
+    let (integration_result_tx, integration_result_rx) = mpsc::sync_channel(4);
+    {
+        let stop = workers.stop.clone();
+        workers.spawn("pet-sessions", move || {
+            platform::codex_sessions::run(stop, codex_rx, session_tx)
+        })?;
+    }
+    {
+        let stop = workers.stop.clone();
+        let directory = state.borrow().directory.clone();
+        workers.spawn("pet-integration", move || {
+            platform::integration::run(stop, directory, integration_rx, integration_result_tx)
+        })?;
+    }
+    {
+        let tx = integration_tx.clone();
+        let weak = settings.as_weak();
+        settings.on_install_integration(move || {
+            if tx.try_send(platform::integration::Request::Install).is_ok()
+                && let Some(settings) = weak.upgrade()
+            {
+                settings.set_integration_busy(true);
+                settings.set_integration_status("正在安装／更新联动…".into());
+            }
+        });
+        let weak = settings.as_weak();
+        settings.on_check_integration(move || {
+            if integration_tx
+                .try_send(platform::integration::Request::Check)
+                .is_ok()
+                && let Some(settings) = weak.upgrade()
+            {
+                settings.set_integration_busy(true);
+            }
+        });
+    }
+    let (voice_tx, voice_rx) = voice::channel();
     let (voice_event_tx, voice_event_rx) = mpsc::sync_channel(8);
     {
         let stop = workers.stop.clone();
@@ -310,7 +343,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             platform::voice::run(stop, voice_rx, voice_event_tx)
         })?;
     }
-    populate(&settings, &state.borrow().config, &[]);
+    populate(&settings, &state.borrow().config);
     apply_visual(&pet, &tray, &menu, &state.borrow().config);
     pet.show()?;
     place(&pet, state.borrow().config.position);
@@ -319,7 +352,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let panel = usage_panel.clone();
         let wp = pet.as_weak();
         pet.on_pat(move || {
-            state.borrow_mut().happy_until = Some(Instant::now() + Duration::from_secs(2));
+            state.borrow_mut().expressions.click(Instant::now());
             if let Some(pet) = wp.upgrade() {
                 panel.toggle(&pet);
             }
@@ -331,7 +364,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         let panel = usage_panel.clone();
         pet.on_drag_request(move |dx, dy| {
             panel.close();
-            state.borrow_mut().surprised_until = Some(Instant::now() + Duration::from_secs(2));
+            state.borrow_mut().expressions.drag(Instant::now());
             if let Some(pet) = weak.upgrade() {
                 pet.window().with_winit_window(|w| {
                     // 按当前屏幕 DPI 移动无激活窗口，避免系统非客户区拖动抢焦点。
@@ -434,7 +467,8 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 (wp.upgrade(), wt.upgrade(), ws.upgrade(), wm.upgrade())
             {
                 let mut state = state.borrow_mut();
-                let mut draft = draft_config(s.get_draft(), &state.config, &state.voices);
+                let original_draft = s.get_draft();
+                let mut draft = base_draft_config(original_draft.clone(), &state.config);
                 let candidate = action.candidate(&state.config);
                 let directory = state.directory.clone();
                 if let Err(e) = ui_state::commit(&mut state.config, candidate, &directory) {
@@ -446,8 +480,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
                 action.merge_into_draft(&mut draft, &state.config);
-                s.set_draft(values(&draft, &state.voices));
-                s.set_applied(values(&state.config, &state.voices));
+                let mut merged = values(&draft);
+                // 快捷操作保留表情草稿原值，即使尚未修正的时间组合暂时无法保存。
+                merged.expressions = original_draft.expressions;
+                merged.resources = original_draft.resources;
+                s.set_draft(merged);
+                s.set_applied(values(&state.config));
                 s.set_status("快捷操作已保存，其他修改仍保留。".into());
                 s.set_status_error(false);
                 if let Ok(mut kb) = keyboard.lock() {
@@ -457,7 +495,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                     state.announcer.clear();
                     state.bubble_until = None;
                     p.set_bubble("".into());
-                    let _ = voice.try_send(VoiceCommand::Stop);
+                    voice.stop();
                 }
                 apply_visual(&p, &t, &m, &state.config);
                 if state.config.passthrough || matches!(action, QuickAction::ResetPosition(_)) {
@@ -548,18 +586,30 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 return;
             };
             let mut state = state.borrow_mut();
-            let c = draft_config(s.get_draft(), &state.config, &state.voices);
+            let c = match draft_config(s.get_draft(), &state.config) {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    s.set_status(format!("未保存，原设置仍有效：{error}").into());
+                    s.set_status_error(true);
+                    return;
+                }
+            };
+            let expressions_changed = c.expressions != state.config.expressions;
+            let previous_config = state.config.clone();
             let directory = state.directory.clone();
             if let Err(e) = ui_state::commit(&mut state.config, c.clone(), &directory) {
                 s.set_status(format!("保存失败，原设置仍有效：{e}").into());
                 s.set_status_error(true);
                 return;
             }
+            if expressions_changed {
+                state.expressions.clear_interactions();
+            }
             if let Ok(mut kb) = keyboard.lock() {
                 kb.pause(c.paused);
             }
             if !c.voice || c.quiet {
-                let _ = voice.try_send(VoiceCommand::Stop);
+                voice.stop();
             }
             if c.quiet {
                 state.announcer.clear();
@@ -567,12 +617,16 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 p.set_bubble("".into());
             }
             state.announcer.remove_disabled(&c);
+            state.rules.configure(&c);
+            state
+                .announcer
+                .remove_changed_resources(&previous_config, &c);
             apply_visual(&p, &t, &m, &state.config);
             if c.passthrough {
                 panel.close();
             }
             place(&p, state.config.position);
-            populate(&s, &state.config, &state.voices);
+            populate(&s, &state.config);
             s.set_status("已保存并应用。".into());
             s.set_status_error(false);
         });
@@ -584,24 +638,19 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         settings.on_preview_voice(move || {
             if let Some(s) = ws.upgrade() {
                 let state = state.borrow();
-                let id = state
-                    .voices
-                    .get(s.get_draft().voice_index.max(0) as usize)
-                    .map(|v| v.0.clone())
-                    .unwrap_or_default();
-                if state.voices.is_empty() {
-                    s.set_voice_status("没有可用音色，无法试听。".into());
+                if state.config.quiet
+                    || (state.config.quiet_fullscreen && platform::desktop::fullscreen_or_busy())
+                {
+                    s.set_voice_status("勿扰期间不播放语音，关闭勿扰后可重新试听。".into());
                     return;
                 }
-                if tx
-                    .try_send(VoiceCommand::Say {
-                        text: "你好，我是流萤。今天也一起加油吧。".into(),
-                        voice_id: id,
-                        volume: s.get_draft().volume.clamp(0, 100) as u16,
-                    })
-                    .is_err()
+                tx.stop();
+                if let Err(error) =
+                    tx.play(VoiceCue::Preview, s.get_draft().volume.clamp(0, 100) as u16)
                 {
-                    s.set_voice_status("语音通道暂时不可用。".into());
+                    s.set_voice_status(error.into());
+                } else {
+                    s.set_voice_status("正在按当前草稿音量试听流萤语音…".into());
                 }
             }
         });
@@ -621,6 +670,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                         .as_millis()
                 ),
                 simulated: true,
+                ..Default::default()
             };
             state
                 .borrow_mut()
@@ -636,6 +686,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut native_configured = false;
     let mut last_window_size = None;
     let mut last_menu_size = None;
+    let mut tracker = Tracker::default();
+    let mut gaze_pose = Pose::default();
+    let mut last_gaze_sample = None;
+    let mut last_face = 0;
     let shutdown_state = state.clone();
     let wp = pet.as_weak();
     let ws = settings.as_weak();
@@ -706,7 +760,7 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         let suppressed = state.config.quiet || (state.config.quiet_fullscreen && busy);
         if suppressed && !was_suppressed {
-            let _ = voice_tx.try_send(VoiceCommand::Stop);
+            voice_tx.stop();
             p.set_bubble("".into());
             state.bubble_until = None;
             state.announcer.clear();
@@ -721,37 +775,12 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         }
         while let Ok(event) = voice_event_rx.try_recv() {
             match event {
-                VoiceEvent::Ready(voices) => {
-                    state.voices = voices;
-                    s.set_voices(
-                        Rc::new(VecModel::from(
-                            state
-                                .voices
-                                .iter()
-                                .map(|(_, name)| name.clone().into())
-                                .collect::<Vec<_>>(),
-                        ))
-                        .into(),
-                    );
-                    s.set_voice_status(
-                        if state.voices.is_empty() {
-                            "没有可用音色，文字提醒仍正常显示。"
-                        } else {
-                            "使用 Windows 已安装音色；语音默认关闭。"
-                        }
-                        .into(),
-                    );
-                    let applied = values(&state.config, &state.voices);
-                    let mut draft = s.get_draft();
-                    draft.voice_index = applied.voice_index;
-                    s.set_draft(draft);
-                    s.set_applied(applied);
-                }
+                VoiceEvent::Ready => s.set_voice_status("内置流萤音色，可离线播放。".into()),
                 VoiceEvent::Error(error) => s.set_voice_status(error.into()),
             }
         }
         while let Ok(sample) = system_rx.try_recv() {
-            usage_panel.metrics(sample.cpu, sample.memory);
+            usage_panel.metrics(sample.cpu, sample.memory, sample.gpu);
             s.set_battery_status(
                 format!(
                     "当前电量：{}",
@@ -767,20 +796,19 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 state.announcer.push(notice, now);
             }
         }
-        while let Ok(event) = codex_rx.try_recv() {
-            if event.simulated {
-                s.set_codex_status("已收到管道模拟事件，真实接入尚需在 Codex 中验证。".into());
-            } else {
-                s.set_codex_status(
-                    format!(
-                        "已收到 hooks 状态事件：{:?}。来源验收请在 Codex 中触发。",
-                        event.kind
-                    )
-                    .into(),
-                );
+        while let Ok(update) = integration_result_rx.try_recv() {
+            s.set_integration_status(update.status.into());
+            s.set_integration_busy(update.busy);
+        }
+        while let Ok(update) = session_rx.try_recv() {
+            usage_panel.sessions(update.rows, update.status);
+            if let Some(status) = update.hook_status {
+                s.set_codex_status(status.into());
             }
-            if state.config.codex {
-                state.announcer.push(event.notice(), now);
+            if state.config.codex && !suppressed {
+                for notice in update.notices {
+                    state.announcer.push(notice, now);
+                }
             }
         }
         if state.bubble_until.is_some_and(|end| now >= end) {
@@ -793,56 +821,74 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             p.set_bubble(notice.text.clone().into());
             p.set_simulation(notice.simulated);
             state.bubble_until = Some(now + Duration::from_secs(7));
-            if state.config.voice && !state.voices.is_empty() {
-                let text = if notice.simulated {
-                    format!("这是一条演示提醒。{}", notice.text)
-                } else {
-                    notice.text
-                };
-                if voice_tx
-                    .try_send(VoiceCommand::Say {
-                        text,
-                        voice_id: state.config.voice_id.clone(),
-                        volume: state.config.volume,
-                    })
-                    .is_err()
-                {
-                    s.set_voice_status("语音通道暂时不可用，已保留文字提醒。".into());
-                }
+            if state.config.voice
+                && let Some(cue) = notice.voice
+                && let Err(error) = voice_tx.play(cue, state.config.volume)
+            {
+                s.set_voice_status(error.into());
             }
         }
-        let mut face = 0;
+        let elapsed = started.elapsed();
+        let mut input_idle = None;
         if let Ok(mut kb) = keyboard.lock() {
             let (label, opacity) = kb.hint(now);
             p.set_key_label(label.into());
             p.set_key_opacity(opacity);
             p.set_left_tap(kb.left_until.is_some_and(|end| now < end));
             p.set_right_tap(kb.right_until.is_some_and(|end| now < end));
-            let idle = kb
-                .last_input
-                .map(|t| now.saturating_duration_since(t))
-                .unwrap_or(started.elapsed());
-            if idle < Duration::from_millis(1200) {
-                face = 2;
-            } else if idle > Duration::from_secs(90) {
-                face = 4;
-            }
+            input_idle = Some(
+                kb.last_input
+                    .map(|t| now.saturating_duration_since(t))
+                    .unwrap_or(elapsed),
+            );
         }
-        if state.bubble_until.is_some() {
-            face = 5;
-        }
-        if state.happy_until.is_some_and(|end| now < end) {
-            face = 3;
-        }
-        if state.surprised_until.is_some_and(|end| now < end) {
-            face = 5;
-        }
-        if face == 0 && started.elapsed().as_millis() % 4800 < 150 {
-            face = 1;
-        }
-        p.set_face(sprite(character.faces[face]));
+        let face = state
+            .expressions
+            .select(
+                &state.config.expressions,
+                now,
+                ExpressionContext {
+                    elapsed,
+                    input_idle,
+                    notice_active: state.bubble_until.is_some(),
+                },
+            )
+            .index();
         let phase = (started.elapsed().as_millis() / 80) as f32 * 0.08;
         p.set_breath((phase * 1.4).sin() * assets::BREATH_AMPLITUDE);
+        let sample_due = last_gaze_sample
+            .is_none_or(|last| elapsed.saturating_sub(last) >= gaze::SAMPLE_INTERVAL);
+        if sample_due {
+            let origin = p.window().position();
+            gaze_pose = tracker.update(
+                platform::desktop::cursor_position(),
+                Geometry {
+                    origin: (origin.x, origin.y),
+                    dpi: p.window().scale_factor(),
+                    scale: p.get_factor(),
+                    headroom: p.get_headroom(),
+                    breath: p.get_breath(),
+                    eye_center: character.gaze.eye_center,
+                },
+                p.get_drag_active(),
+                elapsed,
+            );
+            p.set_facing_left(gaze_pose.facing_left);
+            last_gaze_sample = Some(elapsed);
+        }
+        if sample_due || face != last_face {
+            match gaze_renderer.render(face, gaze_pose) {
+                Ok(image) => {
+                    p.set_face(sprite(character.faces[face]));
+                    p.set_face_image(image);
+                    last_face = face;
+                }
+                Err(error) => {
+                    s.set_status(format!("眼部合成失败：{error}").into());
+                    s.set_status_error(true);
+                }
+            }
+        }
         if placed
             && let Some(pos) = p
                 .window()
@@ -883,27 +929,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn settings_roundtrip_preserves_v1_position_and_unavailable_voice() {
+    fn settings_candidate_includes_expressions_and_rejects_invalid_drafts() {
+        let original = Config {
+            volume: 40,
+            ..Config::default()
+        };
+        let mut draft = values(&original);
+        draft.expressions.click = 0;
+        draft.expressions.input_duration_ms = 2500;
+        draft.scale_percent = 125.;
+        let candidate = draft_config(draft.clone(), &original).unwrap();
+        assert_eq!(candidate.expressions.click, None);
+        assert_eq!(candidate.expressions.input_duration_ms, 2500);
+        assert_eq!(candidate.volume, 40);
+        assert_eq!(candidate.scale, 1.25);
+        assert_eq!(values(&candidate), draft);
+        draft.expressions.blink_interval_ms = 1000;
+        draft.expressions.blink_duration_ms = 1000;
+        assert!(draft_config(draft, &original).is_err());
+        assert_eq!(original.expressions, Default::default());
+    }
+
+    #[test]
+    fn settings_roundtrip_preserves_v1_position_and_voice_preferences() {
         let c = Config {
             tkl: true,
             position: Some((-1200, 300)),
-            voice_id: "unavailable-system-voice".into(),
+            voice: true,
             ..Config::default()
         };
-        let voices = vec![("another-voice".into(), "其他音色".into())];
-        for available in [&[][..], voices.as_slice()] {
-            let mut draft = values(&c, available);
-            assert_eq!(draft.voice_index, -1);
-            assert_eq!(draft_config(draft.clone(), &c, available), c);
-            draft.volume = 30;
-            draft.network = false;
-            let saved = draft_config(draft, &c, available);
-            assert_eq!(saved.voice_id, c.voice_id);
-            assert_eq!(saved.position, c.position);
-            assert_eq!(saved.version, 1);
-            assert!(saved.tkl);
-            assert_eq!(saved.volume, 30);
-            assert!(!saved.network);
-        }
+        let mut draft = values(&c);
+        assert_eq!(draft_config(draft.clone(), &c).unwrap(), c);
+        draft.volume = 30;
+        draft.network = false;
+        let saved = draft_config(draft, &c).unwrap();
+        assert!(saved.voice);
+        assert_eq!(saved.position, c.position);
+        assert_eq!(saved.version, 1);
+        assert!(saved.tkl);
+        assert_eq!(saved.volume, 30);
+        assert!(!saved.network);
     }
 }

@@ -1,3 +1,4 @@
+use super::gpu::GpuSampler;
 use crate::notices::SystemSample;
 use std::{
     sync::{
@@ -49,8 +50,14 @@ pub fn run(stop: Arc<AtomicBool>, tx: SyncSender<SystemSample>) {
         None
     };
     let mut previous = None;
+    let mut gpu = GpuSampler::new();
     while !stop.load(Ordering::Relaxed) {
         let mut sample = SystemSample::default();
+        // 不可用时在下一轮重建计数器，支持驱动或设备恢复；首次采样保留未知。
+        if gpu.is_none() {
+            gpu = GpuSampler::new();
+        }
+        sample.gpu = gpu.as_mut().and_then(GpuSampler::sample);
         unsafe {
             let mut idle = FILETIME::default();
             let mut kernel = FILETIME::default();

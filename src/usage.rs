@@ -3,6 +3,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct QuotaWindow {
+    pub bucket_id: String,
     pub title: String,
     pub remaining: Option<f64>,
     pub resets_at: Option<i64>,
@@ -11,6 +12,32 @@ pub struct QuotaWindow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct QuotaSnapshot {
     pub windows: Vec<QuotaWindow>,
+}
+
+impl QuotaSnapshot {
+    pub fn merge(&mut self, update: Self) -> Result<(), UsageError> {
+        let retained = self
+            .windows
+            .iter()
+            .filter(|old| {
+                !update
+                    .windows
+                    .iter()
+                    .any(|new| new.bucket_id == old.bucket_id)
+            })
+            .count();
+        if retained + update.windows.len() > 64 {
+            return Err(UsageError::Protocol);
+        }
+        self.windows.retain(|old| {
+            !update
+                .windows
+                .iter()
+                .any(|new| new.bucket_id == old.bucket_id)
+        });
+        self.windows.extend(update.windows);
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,13 +55,17 @@ pub enum UsageError {
 impl UsageError {
     pub fn message(self) -> &'static str {
         match self {
-            Self::MissingCodex => "未找到 codex.exe，请将本机 Codex CLI 加入 PATH 后重试。",
+            Self::MissingCodex => {
+                "未找到 Codex 运行程序，请启动或更新 Codex Desktop 后重试，也可将 Codex CLI 加入 PATH。"
+            }
             Self::NotLoggedIn => "Codex 尚未登录或登录已失效，请在 Codex 中登录后重试。",
             Self::UnsupportedAccount => "当前 Codex 登录环境不提供 ChatGPT 订阅额度。",
             Self::Timeout => "额度查询超时，请稍后重试。",
             Self::Network => "无法连接额度服务，请检查网络后重试。",
             Self::Protocol => "Codex 额度响应不可用或版本不兼容，请稍后重试。",
-            Self::Process => "无法完成本机 Codex 查询，请检查 CLI 是否可正常运行。",
+            Self::Process => {
+                "无法完成本机 Codex 查询，请检查 Codex Desktop 或 CLI 是否可正常运行。"
+            }
             Self::Cancelled => "查询已取消，展开面板或点击刷新可重新查询。",
         }
     }
@@ -150,6 +181,16 @@ pub fn parse_limits(result: &Value) -> Result<QuotaSnapshot, UsageError> {
             }
             let duration = window.get("windowDurationMins").and_then(Value::as_u64);
             windows.push(QuotaWindow {
+                bucket_id: format!(
+                    "{}:{key}",
+                    bucket
+                        .get("limitId")
+                        .and_then(Value::as_str)
+                        .unwrap_or(if id == "Codex" { "codex" } else { id })
+                        .chars()
+                        .take(160)
+                        .collect::<String>()
+                ),
                 title: format!("{} · {}", name, period(duration, fallback)),
                 remaining: window
                     .get("usedPercent")
@@ -180,6 +221,43 @@ pub struct UsageState {
 }
 
 impl UsageState {
+    pub fn compact_text(&self) -> String {
+        if self.in_flight.is_some() && self.snapshot.is_none() {
+            return "查询中".into();
+        }
+        if let Some(error) = self.error {
+            if self.snapshot.is_some() {
+                return "已过期".into();
+            }
+            return match error {
+                UsageError::MissingCodex => "未连接",
+                UsageError::NotLoggedIn => "未登录",
+                UsageError::UnsupportedAccount => "不适用",
+                UsageError::Timeout => "超时",
+                UsageError::Network => "连接失败",
+                UsageError::Protocol | UsageError::Process => "不可用",
+                UsageError::Cancelled => "已取消",
+            }
+            .into();
+        }
+        if let Some(snapshot) = &self.snapshot {
+            let values: Option<Vec<f64>> = snapshot
+                .windows
+                .iter()
+                .map(|w| w.remaining.filter(|v| v.is_finite()))
+                .collect();
+            return match values {
+                Some(values) => values
+                    .into_iter()
+                    .reduce(f64::min)
+                    .map(|v| format!("{:.0}%", v.clamp(0., 100.)))
+                    .unwrap_or_else(|| "未知".into()),
+                None => "未知".into(),
+            };
+        }
+        "未查询".into()
+    }
+
     pub fn request(&mut self, now: Instant) -> Option<u64> {
         if self.in_flight.is_some() {
             return None;
@@ -187,9 +265,6 @@ impl UsageState {
         self.sequence = self.sequence.wrapping_add(1).max(1);
         self.in_flight = Some(self.sequence);
         self.last_request = Some(now);
-        self.snapshot = None;
-        self.error = None;
-        self.updated_at = None;
         Some(self.sequence)
     }
 
@@ -216,8 +291,13 @@ impl UsageState {
                 self.error = None;
             }
             Err(error) => {
-                self.snapshot = None;
-                self.updated_at = None;
+                if matches!(
+                    error,
+                    UsageError::NotLoggedIn | UsageError::UnsupportedAccount
+                ) {
+                    self.snapshot = None;
+                    self.updated_at = None;
+                }
                 self.error = Some(error);
             }
         }
@@ -225,11 +305,11 @@ impl UsageState {
     }
 
     pub fn refresh_due(&self, visible: bool, now: Instant) -> bool {
-        visible
-            && self.in_flight.is_none()
+        let _ = visible;
+        self.in_flight.is_none()
             && self
                 .last_request
-                .is_some_and(|last| now.saturating_duration_since(last) >= Duration::from_secs(60))
+                .is_none_or(|last| now.saturating_duration_since(last) >= Duration::from_secs(15))
     }
 
     pub fn status(&self) -> &'static str {
@@ -238,10 +318,22 @@ impl UsageState {
         } else if let Some(error) = self.error {
             error.message()
         } else if self.snapshot.is_some() {
-            "来自本机 Codex 登录环境"
+            "后台自动同步 · 每 15 秒更新"
         } else {
-            "点击角色或“刷新额度”读取账号额度。"
+            "正在连接本机 Codex，后台自动获取额度。"
         }
+    }
+    pub fn update(&mut self, result: Result<QuotaSnapshot, UsageError>, now: SystemTime) {
+        let id = self
+            .in_flight
+            .unwrap_or_else(|| self.request(Instant::now()).unwrap());
+        self.complete(id, result, now);
+    }
+    pub fn reset_account(&mut self) {
+        self.snapshot = None;
+        self.updated_at = None;
+        self.error = None;
+        self.in_flight = None;
     }
 }
 
@@ -249,6 +341,52 @@ impl UsageState {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn partial_notifications_merge_by_bucket_and_window() {
+        let mut full = parse_limits(&json!({"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":20},"secondary":{"usedPercent":10}},"other":{"primary":{"usedPercent":50}}}})).unwrap();
+        let update =
+            parse_limits(&json!({"rateLimits":{"limitId":"codex","primary":{"usedPercent":30}}}))
+                .unwrap();
+        full.merge(update).unwrap();
+        assert_eq!(full.windows.len(), 3);
+        assert!(
+            full.windows
+                .iter()
+                .any(|w| w.bucket_id == "codex:secondary" && w.remaining == Some(90.))
+        );
+        assert!(
+            full.windows
+                .iter()
+                .any(|w| w.bucket_id == "other:primary" && w.remaining == Some(50.))
+        );
+        assert!(
+            full.windows
+                .iter()
+                .any(|w| w.bucket_id == "codex:primary" && w.remaining == Some(70.))
+        );
+    }
+
+    #[test]
+    fn compact_quota_does_not_hide_unknown_or_failed_windows() {
+        let mut state = UsageState::default();
+        assert_eq!(state.compact_text(), "未查询");
+        let id = state.request(Instant::now()).unwrap();
+        assert_eq!(state.compact_text(), "查询中");
+        let snapshot = parse_limits(
+            &json!({"rateLimits":{"primary":{"usedPercent":10},"secondary":{"usedPercent":70}}}),
+        )
+        .unwrap();
+        state.complete(id, Ok(snapshot), SystemTime::now());
+        assert_eq!(state.compact_text(), "30%");
+        state.snapshot.as_mut().unwrap().windows[1].remaining = None;
+        assert_eq!(state.compact_text(), "未知");
+        let id = state.request(Instant::now()).unwrap();
+        state.complete(id, Err(UsageError::MissingCodex), SystemTime::now());
+        assert_eq!(state.compact_text(), "已过期");
+        let id = state.request(Instant::now()).unwrap();
+        state.complete(id, Err(UsageError::NotLoggedIn), SystemTime::now());
+        assert_eq!(state.compact_text(), "未登录");
+    }
 
     #[test]
     fn multiple_buckets_take_precedence_and_periods_are_not_hardcoded() {
@@ -292,7 +430,7 @@ mod tests {
     fn requests_coalesce_cancel_and_ignore_outdated_results() {
         let now = Instant::now();
         let mut state = UsageState::default();
-        assert!(!state.refresh_due(false, now));
+        assert!(state.refresh_due(false, now));
         let old = state.request(now).unwrap();
         assert!(state.request(now).is_none());
         state.cancel();
@@ -300,11 +438,15 @@ mod tests {
         assert!(!state.complete(old, Err(UsageError::Timeout), SystemTime::now()));
         let snapshot = QuotaSnapshot { windows: vec![] };
         assert!(state.complete(current, Ok(snapshot), SystemTime::now()));
-        assert!(!state.refresh_due(false, now + Duration::from_secs(60)));
-        assert!(state.refresh_due(true, now + Duration::from_secs(60)));
+        assert!(!state.refresh_due(false, now + Duration::from_secs(14)));
+        assert!(state.refresh_due(false, now + Duration::from_secs(15)));
         let next = state.request(now).unwrap();
-        assert!(state.snapshot.is_none());
+        assert!(state.snapshot.is_some());
         assert!(state.complete(next, Err(UsageError::Network), SystemTime::now()));
+        assert!(state.snapshot.is_some());
+        assert!(state.updated_at.is_some());
+        let next = state.request(now).unwrap();
+        assert!(state.complete(next, Err(UsageError::NotLoggedIn), SystemTime::now()));
         assert!(state.snapshot.is_none());
         assert!(state.updated_at.is_none());
     }

@@ -1,7 +1,7 @@
 {
   "name": "firefly-pet",
-  "version": "0.1.0",
-  "description": "通过当前 Windows 用户的本地命名管道，将 Codex 轮次结束、审批请求和中断事件发送给流萤桌宠。",
+  "version": "0.2.0",
+  "description": "通过当前 Windows 用户的本地命名管道，发送 Codex 生命周期和权限请求的最小状态标识。",
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "流萤桌宠",

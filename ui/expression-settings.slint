@@ -1,0 +1,124 @@
+import { ComboBox, Slider, SpinBox } from "std-widgets.slint";
+import { PetTheme, ActionButton, Divider } from "controls.slint";
+import { SpriteSpec, CharacterScene } from "character.slint";
+
+export struct ExpressionValues {
+    idle: int, blink: int, input: int, click: int, sleepy: int, drag: int, notice: int,
+    blink-interval-ms: int, blink-duration-ms: int, input-duration-ms: int,
+    click-duration-ms: int, sleepy-after-ms: int, drag-duration-ms: int,
+}
+
+component FaceChoice inherits HorizontalLayout {
+    in property <string> title;
+    in property <bool> required;
+    in-out property <int> value;
+    callback preview(int);
+    spacing: 12px;
+    Text { text: root.title; color: PetTheme.ink; font-weight: 600; vertical-alignment: center; }
+    ComboBox {
+        min-width: 132px; max-width: 160px;
+        model: root.required ? ["待机", "眨眼", "专注", "开心", "困倦", "惊讶"] : ["不切换", "待机", "眨眼", "专注", "开心", "困倦", "惊讶"];
+        current-index <=> root.value;
+        selected(_) => {
+            if root.required || root.value > 0 {
+                root.preview(root.required ? root.value : root.value - 1);
+            }
+        }
+    }
+}
+
+component SecondsSlider inherits HorizontalLayout {
+    in property <string> title: "持续时间";
+    in property <float> minimum: 0.1;
+    in property <float> maximum: 10;
+    in property <bool> enabled: true;
+    in-out property <int> milliseconds;
+    spacing: 12px;
+    opacity: root.enabled ? 1 : 0.5;
+    Text { text: root.title; color: PetTheme.muted; font-size: 12px; vertical-alignment: center; min-width: 64px; }
+    Slider {
+        minimum: root.minimum; maximum: root.maximum; enabled: root.enabled;
+        value: root.milliseconds / 1000;
+        changed(value) => { root.milliseconds = round(value * 10) * 100; }
+    }
+    Text { text: root.milliseconds / 1000 + " 秒"; color: PetTheme.ink; font-size: 12px; min-width: 62px; horizontal-alignment: right; vertical-alignment: center; }
+}
+
+export component ExpressionSettings inherits VerticalLayout {
+    in-out property <ExpressionValues> draft;
+    callback restore-defaults();
+    in-out property <int> preview-index;
+    in property <SpriteSpec> body;
+    in property <SpriteSpec> left-hand;
+    in property <SpriteSpec> right-hand;
+    in property <SpriteSpec> keyboard;
+    in property <[SpriteSpec]> faces;
+    in property <[image]> images;
+    spacing: 14px;
+
+    Rectangle {
+        min-height: 182px; preferred-height: 182px;
+        border-radius: 8px; background: #f0f6f2;
+        HorizontalLayout {
+            padding: 12px; spacing: 12px;
+            Rectangle {
+                width: 150px; horizontal-stretch: 0;
+                CharacterScene {
+                    y: -4px; factor: 0.5;
+                    body: root.body; face: root.faces[root.preview-index];
+                    face-image: root.images[root.preview-index];
+                    left-hand: root.left-hand; right-hand: root.right-hand; keyboard: root.keyboard;
+                }
+            }
+            VerticalLayout {
+                alignment: center; spacing: 10px;
+                Text { text: "表情预览"; color: PetTheme.green; font-weight: 600; }
+                ComboBox {
+                    model: ["待机", "眨眼", "专注", "开心", "困倦", "惊讶"];
+                    current-index <=> root.preview-index;
+                }
+                Text { text: "只在本页预览，保存后应用到桌宠。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+            }
+        }
+    }
+    HorizontalLayout {
+        Text { text: "按场景选择表情"; color: PetTheme.ink; font-size: 16px; font-weight: 600; vertical-alignment: center; }
+        ActionButton { text: "恢复默认"; clicked => { root.restore-defaults(); } }
+    }
+    Text { text: "选择“不切换”后，该场景让位给其他有效场景。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+    FaceChoice { title: "基础待机"; required: true; value <=> root.draft.idle; preview(index) => { root.preview-index = index; } }
+    Divider {}
+    FaceChoice { title: "待机眨眼"; value <=> root.draft.blink; preview(index) => { root.preview-index = index; } }
+    SecondsSlider { title: "眨眼间隔"; minimum: 1; maximum: 30; milliseconds <=> root.draft.blink-interval-ms; enabled: root.draft.blink > 0; }
+    HorizontalLayout {
+        spacing: 12px;
+        Text { text: "持续时间"; color: PetTheme.muted; font-size: 12px; vertical-alignment: center; }
+        SpinBox { minimum: 50; maximum: 1000; step-size: 10; value <=> root.draft.blink-duration-ms; enabled: root.draft.blink > 0; }
+        Text { text: "毫秒"; color: PetTheme.muted; font-size: 12px; vertical-alignment: center; }
+    }
+    if root.draft.blink-duration-ms >= root.draft.blink-interval-ms: Text {
+        text: "眨眼持续时间必须小于间隔，调整后才能保存。"; color: #a63333; font-size: 12px; wrap: word-wrap;
+    }
+    Divider {}
+    FaceChoice { title: "键盘输入"; value <=> root.draft.input; preview(index) => { root.preview-index = index; } }
+    SecondsSlider { milliseconds <=> root.draft.input-duration-ms; enabled: root.draft.input > 0; }
+    Divider {}
+    FaceChoice { title: "点击角色"; value <=> root.draft.click; preview(index) => { root.preview-index = index; } }
+    SecondsSlider { milliseconds <=> root.draft.click-duration-ms; enabled: root.draft.click > 0; }
+    Divider {}
+    FaceChoice { title: "无键盘输入"; value <=> root.draft.sleepy; preview(index) => { root.preview-index = index; } }
+    HorizontalLayout {
+        spacing: 12px;
+        Text { text: "等待时间"; color: PetTheme.muted; font-size: 12px; vertical-alignment: center; }
+        SpinBox { minimum: 15; maximum: 3600; value: round(root.draft.sleepy-after-ms / 1000); enabled: root.draft.sleepy > 0; edited(value) => { root.draft.sleepy-after-ms = value * 1000; } }
+        Text { text: "秒"; color: PetTheme.muted; font-size: 12px; vertical-alignment: center; }
+    }
+    Divider {}
+    FaceChoice { title: "拖动角色"; value <=> root.draft.drag; preview(index) => { root.preview-index = index; } }
+    SecondsSlider { milliseconds <=> root.draft.drag-duration-ms; enabled: root.draft.drag > 0; }
+    Divider {}
+    FaceChoice { title: "消息提醒"; value <=> root.draft.notice; preview(index) => { root.preview-index = index; } }
+    Text { text: "系统与 Codex 提醒共用此表情，跟随消息气泡显示（当前 7 秒）。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+    Text { text: "优先级：拖动 → 点击 → 提醒 → 输入或困倦 → 眨眼 → 待机。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+    Text { text: "恢复默认只修改本页草稿，点击“保存并应用”后生效。"; color: PetTheme.muted; font-size: 12px; wrap: word-wrap; }
+}

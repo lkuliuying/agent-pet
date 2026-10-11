@@ -1,0 +1,31 @@
+import { SpinBox } from "std-widgets.slint";
+import { PetTheme, SettingToggle } from "controls.slint";
+
+export struct AlertValues { threshold: int, seconds: int, minutes: int }
+export struct ResourceValues { gpu: bool, cpu-rule: AlertValues, memory-rule: AlertValues, gpu-rule: AlertValues }
+
+export component ResourceAlertEditor inherits VerticalLayout {
+    in property <string> title;
+    in-out property <bool> active;
+    in-out property <AlertValues> rule;
+    spacing: 8px;
+    SettingToggle { text: root.title + " 高占用"; checked <=> root.active; }
+    HorizontalLayout {
+        spacing: 10px;
+        VerticalLayout {
+            spacing: 4px;
+            Text { text: "达到阈值（%）"; font-size: 12px; color: PetTheme.muted; }
+            SpinBox { minimum: 1; maximum: 100; enabled: root.active; value <=> root.rule.threshold; }
+        }
+        VerticalLayout {
+            spacing: 4px;
+            Text { text: "持续时间（秒）"; font-size: 12px; color: PetTheme.muted; }
+            SpinBox { minimum: 5; maximum: 3600; step-size: 5; enabled: root.active; value <=> root.rule.seconds; }
+        }
+        VerticalLayout {
+            spacing: 4px;
+            Text { text: "重复间隔（分钟）"; font-size: 12px; color: PetTheme.muted; }
+            SpinBox { minimum: 1; maximum: 60; enabled: root.active; value <=> root.rule.minutes; }
+        }
+    }
+}

@@ -1,23 +1,10 @@
 export { SettingsWindow, SettingsValues } from "settings.slint";
+export { ExpressionValues } from "expression-settings.slint";
+export { SpriteSpec } from "character.slint";
+import { SpriteSpec, CharacterScene } from "character.slint";
 export { QuickMenuWindow, MenuAction } from "quick-menu.slint";
 export { StatusPanelWindow, QuotaRow } from "status-panel.slint";
-
-export struct SpriteSpec { sx: int, sy: int, sw: int, sh: int, px: float, py: float, w: float, h: float }
-
-component Sprite inherits Image {
-    in property <SpriteSpec> spec;
-    in property <float> factor: 1;
-    x: spec.px * factor * 1px;
-    y: spec.py * factor * 1px;
-    width: spec.w * factor * 1px;
-    height: spec.h * factor * 1px;
-    source: @image-url("../assets/firefly/atlas.png");
-    source-clip-x: spec.sx;
-    source-clip-y: spec.sy;
-    source-clip-width: spec.sw;
-    source-clip-height: spec.sh;
-    image-fit: fill;
-}
+export { SessionRow } from "session-list.slint";
 
 export component PetWindow inherits Window {
     title: "流萤 · 键盘桌宠";
@@ -40,6 +27,13 @@ export component PetWindow inherits Window {
     in property <float> breath;
     in property <SpriteSpec> body;
     in property <SpriteSpec> face;
+    in property <image> face-image;
+    out property <image> character-atlas: @image-url("../assets/firefly/atlas.png");
+    out property <image> gaze-atlas: @image-url("../assets/firefly/gaze.png");
+    in property <bool> facing-left;
+    out property <bool> drag-active: interaction.pressed && root.dragging;
+    out property <bool> near-tap: root.facing-left ? root.right-tap : root.left-tap;
+    out property <bool> far-tap: root.facing-left ? root.left-tap : root.right-tap;
     in property <SpriteSpec> left-hand;
     in property <SpriteSpec> right-hand;
     in property <SpriteSpec> keyboard;
@@ -64,13 +58,16 @@ export component PetWindow inherits Window {
             Text { text: root.bubble; color: #264b43; wrap: word-wrap; overflow: elide; font-size: 12px * root.factor; vertical-alignment: center; }
         }
     }
-    Sprite {spec: root.body; factor: root.factor; y: (root.body.py + root.headroom + root.breath) * root.factor * 1px;}
-    Sprite {spec: root.face; factor: root.factor; y: (root.face.py + root.headroom + root.breath) * root.factor * 1px;}
-    Sprite {spec:root.keyboard;factor:root.factor;y:(root.keyboard.py + root.headroom)*root.factor*1px;}
-    Sprite {spec:root.left-hand;factor:root.factor;y:(root.left-hand.py + root.headroom + root.breath + (root.left-tap ? root.left-tap-dy : 0))*root.factor*1px;animate y {duration:55ms;}}
-    Sprite {spec:root.right-hand;factor:root.factor;y:(root.right-hand.py + root.headroom + root.breath + (root.right-tap ? root.right-tap-dy : 0))*root.factor*1px;animate y {duration:55ms;}}
+    CharacterScene {
+        y: root.headroom * root.factor * 1px;
+        factor: root.factor; breath: root.breath; facing-left: root.facing-left;
+        body: root.body; face: root.face; face-image: root.face-image;
+        keyboard: root.keyboard; left-hand: root.left-hand; right-hand: root.right-hand;
+        near-tap: root.near-tap; far-tap: root.far-tap;
+        left-tap-dy: root.left-tap-dy; right-tap-dy: root.right-tap-dy;
+    }
     if root.key-label != "": Rectangle {
-        x: parent.width - 12px * root.factor - self.width;
+        x: root.facing-left ? 12px * root.factor : parent.width - 12px * root.factor - self.width;
         y: (root.label-y + root.headroom) * root.factor * 1px;
         width: min(276px * root.factor, max(48px * root.factor, key-text.preferred-width + 20px * root.factor));
         height: 24px * root.factor;
@@ -83,7 +80,7 @@ export component PetWindow inherits Window {
             horizontal-alignment: center; vertical-alignment: center; overflow: elide;
         }
     }
-    TouchArea {
+    interaction := TouchArea {
         pointer-event(event) => {
             if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                 root.dismiss-menu();

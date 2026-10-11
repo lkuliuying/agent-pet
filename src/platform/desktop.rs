@@ -38,14 +38,20 @@ pub fn configure_menu(hwnd: HWND) {
         );
     }
 }
-pub fn pointer_press() -> Option<(bool, (i32, i32))> {
+pub fn cursor_position() -> Option<(i32, i32)> {
     unsafe {
         let mut point = POINT::default();
         GetCursorPos(&mut point).ok()?;
+        Some((point.x, point.y))
+    }
+}
+pub fn pointer_press() -> Option<(bool, (i32, i32))> {
+    let point = cursor_position()?;
+    unsafe {
         let pressed = [VK_LBUTTON, VK_RBUTTON, VK_MBUTTON]
             .iter()
             .any(|key| GetAsyncKeyState(key.0 as i32) < 0);
-        Some((pressed, (point.x, point.y)))
+        Some((pressed, point))
     }
 }
 pub fn escape_pressed() -> bool {

@@ -1,0 +1,48 @@
+export struct SpriteSpec { sx: int, sy: int, sw: int, sh: int, px: float, py: float, w: float, h: float }
+
+component Sprite inherits Image {
+    in property <SpriteSpec> spec;
+    in property <float> factor: 1;
+    x: spec.px * factor * 1px;
+    y: spec.py * factor * 1px;
+    width: spec.w * factor * 1px;
+    height: spec.h * factor * 1px;
+    source: @image-url("../assets/firefly/atlas.png");
+    source-clip-x: spec.sx;
+    source-clip-y: spec.sy;
+    source-clip-width: spec.sw;
+    source-clip-height: spec.sh;
+    image-fit: fill;
+}
+
+export component CharacterScene inherits Rectangle {
+    in property <float> factor: 1;
+    in property <float> breath;
+    in property <bool> facing-left;
+    in property <bool> near-tap;
+    in property <bool> far-tap;
+    in property <float> left-tap-dy;
+    in property <float> right-tap-dy;
+    in property <SpriteSpec> body;
+    in property <SpriteSpec> face;
+    in property <image> face-image;
+    in property <SpriteSpec> left-hand;
+    in property <SpriteSpec> right-hand;
+    in property <SpriteSpec> keyboard;
+    width: 300px * root.factor; height: 320px * root.factor;
+    background: transparent;
+    Rectangle {
+        width: parent.width; height: parent.height;
+        transform-scale-x: root.facing-left ? -1 : 1;
+        Sprite { spec: root.body; factor: root.factor; y: (root.body.py + root.breath) * root.factor * 1px; }
+        Image {
+            x: root.face.px * root.factor * 1px;
+            y: (root.face.py + root.breath) * root.factor * 1px;
+            width: root.face.w * root.factor * 1px; height: root.face.h * root.factor * 1px;
+            source: root.face-image; image-fit: fill;
+        }
+        Sprite { spec: root.keyboard; factor: root.factor; }
+        Sprite { spec: root.left-hand; factor: root.factor; y: (root.left-hand.py + root.breath + (root.near-tap ? root.left-tap-dy : 0)) * root.factor * 1px; animate y { duration: 55ms; } }
+        Sprite { spec: root.right-hand; factor: root.factor; y: (root.right-hand.py + root.breath + (root.far-tap ? root.right-tap-dy : 0)) * root.factor * 1px; animate y { duration: 55ms; } }
+    }
+}

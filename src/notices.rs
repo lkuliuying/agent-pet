@@ -1,4 +1,6 @@
 use crate::config::Config;
+use crate::resource_alerts::AlertRule;
+use crate::voice::VoiceCue;
 use std::{
     collections::{HashMap, VecDeque},
     time::{Duration, Instant},
@@ -10,6 +12,7 @@ pub struct Notice {
     pub text: String,
     pub simulated: bool,
     pub important: bool,
+    pub voice: Option<VoiceCue>,
 }
 impl Notice {
     pub fn system(key: &str, text: &str) -> Self {
@@ -18,6 +21,7 @@ impl Notice {
             text: text.into(),
             simulated: false,
             important: false,
+            voice: VoiceCue::system(key),
         }
     }
 }
@@ -68,21 +72,48 @@ impl Announcer {
         self.queue.clear();
     }
     pub fn remove_disabled(&mut self, config: &Config) {
-        self.queue.retain(|(notice, _)| match notice.key.as_str() {
-            "cpu" => config.cpu,
-            "memory" => config.memory,
-            "battery10" | "battery20" => config.battery,
-            "power-on" | "power-off" => config.power,
-            "network-on" | "network-off" => config.network,
-            key if key.starts_with("codex:") => config.codex,
-            _ => true,
-        });
+        self.queue.retain(
+            |(notice, _)| match notice.key.split(':').next().unwrap_or("") {
+                "cpu" => config.cpu,
+                "memory" => config.memory,
+                "gpu" => config.resource_alerts.gpu_enabled,
+                "battery10" | "battery20" => config.battery,
+                "power-on" | "power-off" => config.power,
+                "network-on" | "network-off" => config.network,
+                "codex" => config.codex,
+                _ => true,
+            },
+        );
+    }
+    pub fn remove_changed_resources(&mut self, before: &Config, after: &Config) {
+        for (key, changed) in [
+            (
+                "cpu",
+                before.cpu != after.cpu || before.resource_alerts.cpu != after.resource_alerts.cpu,
+            ),
+            (
+                "memory",
+                before.memory != after.memory
+                    || before.resource_alerts.memory != after.resource_alerts.memory,
+            ),
+            (
+                "gpu",
+                before.resource_alerts.gpu_enabled != after.resource_alerts.gpu_enabled
+                    || before.resource_alerts.gpu != after.resource_alerts.gpu,
+            ),
+        ] {
+            if changed {
+                self.queue
+                    .retain(|(notice, _)| notice.key.split(':').next() != Some(key));
+            }
+        }
     }
 }
 #[derive(Debug, Clone, Default)]
 pub struct SystemSample {
     pub cpu: Option<f64>,
     pub memory: Option<f64>,
+    pub gpu: Option<f64>,
     pub battery: Option<u8>,
     pub charging: Option<bool>,
     pub online: Option<bool>,
@@ -91,18 +122,33 @@ pub struct SystemSample {
 struct Sustained {
     since: Option<Instant>,
     last: Option<Instant>,
+    rule: Option<(bool, AlertRule)>,
 }
 impl Sustained {
-    fn check(&mut self, value: Option<f64>, enabled: bool, now: Instant) -> bool {
-        if !enabled || !value.is_some_and(|v| v.is_finite() && v > 90.) {
+    fn configure(&mut self, enabled: bool, rule: AlertRule) {
+        if self.rule != Some((enabled, rule)) {
+            self.since = None;
+            self.last = None;
+            self.rule = Some((enabled, rule));
+        }
+    }
+    fn check(&mut self, value: Option<f64>, enabled: bool, rule: AlertRule, now: Instant) -> bool {
+        self.configure(enabled, rule);
+        if !enabled
+            || !value.is_some_and(|v| {
+                v.is_finite() && (0.0..=100.0).contains(&v) && v >= f64::from(rule.threshold)
+            })
+        {
             self.since = None;
             return false;
         }
         let since = *self.since.get_or_insert(now);
-        if now.saturating_duration_since(since) >= Duration::from_secs(30)
-            && self
-                .last
-                .is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_secs(300))
+        if now.saturating_duration_since(since)
+            >= Duration::from_secs(u64::from(rule.sustained_seconds))
+            && self.last.is_none_or(|at| {
+                now.saturating_duration_since(at)
+                    >= Duration::from_secs(u64::from(rule.interval_minutes) * 60)
+            })
         {
             self.last = Some(now);
             return true;
@@ -114,6 +160,8 @@ impl Sustained {
 pub struct SystemRules {
     cpu: Sustained,
     memory: Sustained,
+    gpu: Sustained,
+    sequence: u64,
     last_power: Option<bool>,
     network: Option<bool>,
     candidate: Option<(bool, Instant)>,
@@ -121,19 +169,57 @@ pub struct SystemRules {
     battery10: bool,
 }
 impl SystemRules {
+    pub fn configure(&mut self, config: &Config) {
+        self.cpu.configure(config.cpu, config.resource_alerts.cpu);
+        self.memory
+            .configure(config.memory, config.resource_alerts.memory);
+        self.gpu.configure(
+            config.resource_alerts.gpu_enabled,
+            config.resource_alerts.gpu,
+        );
+    }
     pub fn update(&mut self, s: &SystemSample, c: &Config, now: Instant) -> Vec<Notice> {
         let mut out = Vec::new();
-        if self.cpu.check(s.cpu, c.cpu, now) {
-            out.push(Notice::system(
+        for (key, label, value, enabled, rule, tracker) in [
+            (
                 "cpu",
-                "电脑有点忙，处理器已经持续高负载了。",
-            ));
-        }
-        if self.memory.check(s.memory, c.memory, now) {
-            out.push(Notice::system(
+                "CPU",
+                s.cpu,
+                c.cpu,
+                c.resource_alerts.cpu,
+                &mut self.cpu,
+            ),
+            (
                 "memory",
-                "内存快装满啦，可以关掉暂时不用的程序。",
-            ));
+                "内存",
+                s.memory,
+                c.memory,
+                c.resource_alerts.memory,
+                &mut self.memory,
+            ),
+            (
+                "gpu",
+                "GPU",
+                s.gpu,
+                c.resource_alerts.gpu_enabled,
+                c.resource_alerts.gpu,
+                &mut self.gpu,
+            ),
+        ] {
+            if tracker.check(value, enabled, rule, now) {
+                self.sequence = self.sequence.wrapping_add(1);
+                let mut notice = Notice::system(
+                    key,
+                    &format!(
+                        "{label} 持续高占用，当前 {:.0}%（阈值 {}%）。",
+                        value.unwrap_or_default(),
+                        rule.threshold
+                    ),
+                );
+                // 资源规则已负责冷却，每次触发独立标识，不能被通用五分钟去重压住。
+                notice.key = format!("{key}:{}", self.sequence);
+                out.push(notice);
+            }
         }
         if let Some(power) = s.charging {
             if c.power && self.last_power.is_some_and(|old| old != power) {
@@ -210,6 +296,116 @@ impl SystemRules {
 mod tests {
     use super::*;
     #[test]
+    fn saving_and_restoring_a_rule_between_samples_restarts_timing() {
+        let mut rules = SystemRules::default();
+        let mut config = Config::default();
+        let sample = SystemSample {
+            cpu: Some(95.),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        assert!(rules.update(&sample, &config, start).is_empty());
+        config.resource_alerts.cpu.threshold = 99;
+        rules.configure(&config);
+        config.resource_alerts.cpu.threshold = 90;
+        rules.configure(&config);
+        assert!(
+            rules
+                .update(&sample, &config, start + Duration::from_secs(30))
+                .is_empty()
+        );
+        assert_eq!(
+            rules
+                .update(&sample, &config, start + Duration::from_secs(60))
+                .len(),
+            1
+        );
+    }
+    #[test]
+    fn configurable_rules_reset_and_allow_short_independent_cooldowns() {
+        let mut rules = SystemRules::default();
+        let mut queue = Announcer::default();
+        let mut config = Config::default();
+        config.resource_alerts.cpu = AlertRule {
+            threshold: 80,
+            sustained_seconds: 5,
+            interval_minutes: 1,
+        };
+        config.resource_alerts.gpu = AlertRule {
+            threshold: 95,
+            sustained_seconds: 10,
+            interval_minutes: 2,
+        };
+        let now = Instant::now();
+        let mut sample = SystemSample {
+            cpu: Some(80.),
+            gpu: Some(95.),
+            ..Default::default()
+        };
+        assert!(rules.update(&sample, &config, now).is_empty());
+        for at in [5, 10, 65] {
+            let notices = rules.update(&sample, &config, now + Duration::from_secs(at));
+            assert_eq!(notices.len(), 1);
+            assert_eq!(
+                notices[0].voice,
+                Some(if at == 10 {
+                    VoiceCue::Gpu
+                } else {
+                    VoiceCue::Cpu
+                })
+            );
+            queue.push(notices[0].clone(), now + Duration::from_secs(at));
+            assert!(
+                queue.next(now + Duration::from_secs(at), false).is_some(),
+                "一分钟提醒不能被固定五分钟去重吞掉"
+            );
+        }
+        let before = config.clone();
+        config.resource_alerts.cpu.threshold = 81;
+        queue.push(Notice::system("cpu:old", "旧 CPU 提醒"), now);
+        queue.push(Notice::system("gpu:old", "GPU 提醒"), now);
+        queue.remove_changed_resources(&before, &config);
+        assert_eq!(queue.next(now, false).unwrap().key, "gpu:old");
+        assert!(queue.next(now, false).is_none());
+        sample.cpu = Some(82.);
+        sample.gpu = None;
+        assert!(
+            rules
+                .update(&sample, &config, now + Duration::from_secs(70))
+                .is_empty()
+        );
+        assert_eq!(
+            rules
+                .update(&sample, &config, now + Duration::from_secs(75))
+                .len(),
+            1
+        );
+        config.cpu = false;
+        config.resource_alerts.gpu_enabled = false;
+        sample.gpu = Some(100.);
+        assert!(
+            rules
+                .update(&sample, &config, now + Duration::from_secs(200))
+                .is_empty()
+        );
+        for value in [None, Some(f64::NAN), Some(-1.), Some(101.), Some(79.)] {
+            let mut sustained = Sustained::default();
+            assert!(!sustained.check(Some(90.), true, config.resource_alerts.cpu, now));
+            assert!(!sustained.check(
+                value,
+                true,
+                config.resource_alerts.cpu,
+                now + Duration::from_secs(5)
+            ));
+            assert!(!sustained.check(
+                Some(90.),
+                true,
+                config.resource_alerts.cpu,
+                now + Duration::from_secs(6)
+            ));
+        }
+    }
+    #[test]
     fn resource_threshold_cooldown_and_unknown() {
         let mut r = SystemRules::default();
         let c = Config::default();
@@ -284,7 +480,11 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(r.update(&s, &c, t)[0].key, "battery20");
-        assert!(r.update(&s, &c, t + Duration::from_secs(60)).is_empty());
+        assert!(
+            r.update(&s, &c, t + Duration::from_secs(60))[0]
+                .key
+                .starts_with("cpu:")
+        );
         s.battery = Some(10);
         assert_eq!(
             r.update(&s, &c, t + Duration::from_secs(65))[0].key,
